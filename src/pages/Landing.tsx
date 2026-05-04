@@ -1,7 +1,9 @@
 import { Fish, Truck, ChefHat, Phone, MapPin, Clock } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { getSettings } from '../lib/settings'
 
 export default function Landing() {
+  const s = getSettings()
   return (
     <div className="min-h-screen">
       {/* Hero Section */}
@@ -13,7 +15,7 @@ export default function Landing() {
               <Fish className="w-16 h-16" />
             </div>
           </div>
-          <h1 className="text-4xl md:text-6xl font-bold mb-4">Peixaria Khrismir</h1>
+          <h1 className="text-4xl md:text-6xl font-bold mb-4">{s.name}</h1>
           <p className="text-xl md:text-2xl text-cyan-100 mb-8">Frescor do Mar à sua Mesa</p>
           <p className="text-lg text-cyan-50 max-w-2xl mx-auto mb-8">
             Os melhores peixes e mariscos frescos de Angola. Qualidade garantida, 
@@ -83,10 +85,7 @@ export default function Landing() {
               </div>
               <div>
                 <h3 className="font-semibold text-gray-800 mb-1">Morada</h3>
-                <p className="text-gray-600">
-                  Centralidade da Quilemba, Lubango, Huíla<br />
-                  Segunda entrada, lado esquerdo
-                </p>
+                <p className="text-gray-600">{s.address}</p>
               </div>
             </div>
             <div className="bg-white p-6 rounded-xl shadow-lg flex items-start gap-4">
@@ -96,8 +95,8 @@ export default function Landing() {
               <div>
                 <h3 className="font-semibold text-gray-800 mb-1">Telefones</h3>
                 <p className="text-gray-600">
-                  +244 929 970 984 / +244 924 359 638<br />
-                  <span className="text-green-600 font-medium">WhatsApp: +244 929 970 984</span>
+                  {s.phone}<br />
+                  <a href={`https://wa.me/${s.whatsapp}`} className="text-green-600 font-medium hover:underline" target="_blank" rel="noopener noreferrer">WhatsApp: +{s.whatsapp}</a>
                 </p>
               </div>
             </div>
@@ -107,10 +106,7 @@ export default function Landing() {
               </div>
               <div>
                 <h3 className="font-semibold text-gray-800 mb-1">Horário de Funcionamento</h3>
-                <p className="text-gray-600">
-                  Segunda a Sábado: 07:00 - 19:00<br />
-                  Domingos: 07:00 - 13:00
-                </p>
+                <p className="text-gray-600">{s.opening_hours}</p>
               </div>
             </div>
           </div>
@@ -120,7 +116,7 @@ export default function Landing() {
       {/* Footer */}
       <footer className="bg-gray-800 text-white py-8">
         <div className="container mx-auto px-4 text-center">
-          <p className="text-gray-400">© 2024 Peixaria Khrismir. Todos os direitos reservados.</p>
+          <p className="text-gray-400">© {new Date().getFullYear()} {s.name}. Todos os direitos reservados.</p>
           <p className="text-sm text-gray-500 mt-2">Frescor do Mar à sua Mesa</p>
         </div>
       </footer>

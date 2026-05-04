@@ -8,9 +8,9 @@ export interface User {
   phone?: string
   address?: string
   company_name?: string
-  tax_id?: string // NIF
+  tax_id?: string
   role: UserRole
-  access_areas?: string[] // permissões do funcionário
+  access_areas?: string[]
   created_at?: string
 }
 
@@ -28,7 +28,8 @@ export interface Category {
 export interface Product {
   id: string
   name: string
-  price: number // por kg
+  price: number
+  cost_price?: number
   unit: string
   stock_quantity: number
   min_stock: number
@@ -38,7 +39,53 @@ export interface Product {
   allow_steak: boolean
   category_id: string
   image_url?: string
+  expiry_date?: string
   created_at?: string
+}
+
+export interface Supplier {
+  id: string
+  name: string
+  nif?: string
+  phone?: string
+  email?: string
+  address?: string
+  notes?: string
+  created_at: string
+}
+
+export interface ShiftSession {
+  id: string
+  opened_at: string
+  closed_at?: string
+  opening_balance: number
+  closing_balance?: number
+  cash_counted?: number
+  difference?: number
+  opened_by: string
+  closed_by?: string
+  notes?: string
+}
+
+export interface Return {
+  id: string
+  order_id: string
+  order_number: string
+  customer_name?: string
+  items: { product_name: string; quantity: number; amount: number }[]
+  total: number
+  reason: string
+  created_at: string
+}
+
+export interface LoyaltyTransaction {
+  id: string
+  client_id: string
+  client_name: string
+  points: number
+  type: 'earned' | 'redeemed'
+  order_id?: string
+  created_at: string
 }
 
 export type OrderStatus = 'pendente' | 'confirmado' | 'preparando' | 'pronto' | 'entregue' | 'cancelado'
@@ -51,7 +98,7 @@ export interface OrderItem {
   order_id: string
   product_id: string
   product_name: string
-  quantity: number // peso em kg
+  quantity: number
   unit_price: number
   preparation: PreparationType
   total_price: number
@@ -62,14 +109,43 @@ export interface Order {
   order_number: string
   customer_id?: string
   customer_name?: string
+  customer_phone?: string
   customer_nif?: string
   status: OrderStatus
   payment_type: PaymentType
   delivery_type: DeliveryType
+  delivery_zone?: string
+  delivery_fee?: number
+  delivery_address?: string
+  discount_code?: string
+  discount_amount?: number
+  subtotal?: number
   total: number
   items: OrderItem[]
+  notes?: string
   created_at: string
   updated_at?: string
+  hash?: string
+}
+
+export interface DeliveryZone {
+  id: string
+  name: string
+  price: number
+  description?: string
+}
+
+export interface PromoCode {
+  id: string
+  code: string
+  discount_type: 'percentage' | 'fixed'
+  discount_value: number
+  min_order: number
+  uses: number
+  max_uses?: number
+  expires_at?: string
+  active: boolean
+  created_at: string
 }
 
 export interface StockMovement {
@@ -81,30 +157,36 @@ export interface StockMovement {
   created_at: string
 }
 
-export interface StoreSettings {
-  store_name: string
-  phone: string
-  whatsapp: string
-  email: string
-  address: string
-  nif: string
-  logo_url?: string
-}
-
 export interface CartItem extends Product {
   quantity: number
   preparation: PreparationType
 }
 
+export type PurchaseType = 'fornecedor' | 'interno'
+
+export interface PurchaseItem {
+  name: string
+  quantity: number
+  unitPrice: number
+}
+
+export interface Purchase {
+  id: string
+  date: string
+  type: PurchaseType
+  supplier: string
+  items: PurchaseItem[]
+  total: number
+  paymentType: string
+  notes?: string
+}
+
 export interface CashFlow {
   id: string
-  type: 'entrada' | 'saída'
+  type: 'entrada' | 'saida'
   amount: number
   description: string
   order_number?: string
   payment_type?: PaymentType
-  paymentType?: string
-  orderId?: string
-  date?: string
   created_at?: string
 }

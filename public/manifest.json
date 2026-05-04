@@ -1,0 +1,14 @@
+{
+  "name": "Peixaria Khrismir",
+  "short_name": "Khrismir",
+  "description": "Peixaria Khrismir – Frescor do Mar à sua Mesa. Lubango, Huíla.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f0f9ff",
+  "theme_color": "#0891b2",
+  "orientation": "any",
+  "categories": ["food", "shopping"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

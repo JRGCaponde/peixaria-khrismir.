@@ -1,0 +1,41 @@
+import CryptoJS from 'crypto-js';
+
+export const seedDatabase = () => {
+  const existing = localStorage.getItem('khrismir_clients');
+  
+  // Só executa se não houver clientes ou se quiseres resetar a base de dados
+  if (!existing || JSON.parse(existing).length === 0) {
+    const demoClients = [
+      {
+        id: 'admin-1',
+        email: 'jorgeamaral2009@gmail.com',
+        password: CryptoJS.SHA256('podescre0').toString(),
+        full_name: 'Jorge Amaral (Admin)',
+        phone: '923000000',
+        role: 'admin',
+        created_at: new Date().toISOString()
+      },
+      {
+        id: 'func-1',
+        email: 'func@peixaria.com',
+        password: CryptoJS.SHA256('123456').toString(),
+        full_name: 'Funcionário Exemplo',
+        phone: '923111111',
+        role: 'employee',
+        created_at: new Date().toISOString()
+      },
+      {
+        id: 'client-1',
+        email: 'cliente@peixaria.com',
+        password: CryptoJS.SHA256('123456').toString(),
+        full_name: 'Cliente Teste',
+        phone: '923222222',
+        role: 'client',
+        created_at: new Date().toISOString()
+      }
+    ];
+
+    localStorage.setItem('khrismir_clients', JSON.stringify(demoClients));
+    console.log('✅ Base de dados de demonstração inicializada com sucesso!');
+  }
+};

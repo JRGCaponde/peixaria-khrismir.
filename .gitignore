@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-web/
+release/
+.vercel
+.env
+khrismir-backup-*.json
+khrismir-fiscal-*.xlsx
+SAF-T_*.json

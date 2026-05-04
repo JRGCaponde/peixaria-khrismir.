@@ -1,696 +1,689 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
-import { Search, Plus, Trash2, Edit, X, Package, Users, TrendingUp, DollarSign, FileText, Settings, Database, Printer } from 'lucide-react'
-import type { Product, Category, Order, User, CashFlow, Employee } from '../types/database'
+import CryptoJS from 'crypto-js'
+import * as XLSX from 'xlsx'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, PieChart, Pie, Cell,
+} from 'recharts'
+import {
+  Plus, Trash2, Edit, Package, Users, TrendingUp, FileText,
+  Database, Upload, Wallet, Search, Filter,
+  Receipt, MessageCircle, Download, Clock, ShoppingBag,
+  Settings, MapPin, Tag, UserCheck, Printer, Truck, RotateCcw,
+  Star, CalendarDays, AlertTriangle, QrCode, Share2, X,
+} from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
+import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, DeliveryZone, PromoCode, Supplier, Return, LoyaltyTransaction } from '../types/database'
+import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
+import { printInvoice } from '../utils/invoice'
+import { registerPurchaseMovement, getCashFlowSummary, syncAllData, migrateExistingData } from '../lib/cashflow'
+import {
+  syncOrderStatus, pullAll, pushAll,
+  syncProducts, syncCategories, syncDeliveryZones, syncPromos, syncSettings,
+  deleteProduct, deleteCategory, deleteZone, deletePromo,
+} from '../lib/sync'
+import { supabase, isSupabaseReady } from '../lib/supabase'
+import { useNavigate } from 'react-router-dom'
+import { generateSAFTXML, downloadSAFT } from '../utils/saft'
+import { useAuthStore } from '../stores/useAuthStore'
 
-type Tab = 'overview' | 'products' | 'categories' | 'orders' | 'employees' | 'cashflow' | 'reports' | 'purchases' | 'settings' | 'system' | 'agt'
+type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system'
+
+const statusConfig: Record<OrderStatus, { label: string; color: string; next?: OrderStatus }> = {
+  pendente:   { label: 'Pendente',   color: 'bg-yellow-100 text-yellow-800',  next: 'confirmado' },
+  confirmado: { label: 'Confirmado', color: 'bg-blue-100 text-blue-800',      next: 'preparando' },
+  preparando: { label: 'Preparando', color: 'bg-orange-100 text-orange-800',  next: 'pronto'     },
+  pronto:     { label: 'Pronto',     color: 'bg-green-100 text-green-800',    next: 'entregue'   },
+  entregue:   { label: 'Entregue',   color: 'bg-emerald-100 text-emerald-800'                    },
+  cancelado:  { label: 'Cancelado',  color: 'bg-red-100 text-red-800'                            },
+}
 
 const initialCategories: Category[] = [
   { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
-  { id: '2', name: 'Mariscos', description: 'Camarão, polvo, lulas' },
-  { id: '3', name: 'Peixes Grandes', description: 'Peixes de maior porte' },
+  { id: '2', name: 'Mariscos',       description: 'Camarão, polvo, lulas'  },
 ]
 
 const initialProducts: Product[] = [
-  { id: '1', name: 'Sardinha', price: 1500, unit: 'kg', stock_quantity: 50, min_stock: 10, allow_whole: true, allow_clean: true, allow_fillet: false, allow_steak: false, category_id: '1' },
-  { id: '2', name: 'Atum', price: 2500, unit: 'kg', stock_quantity: 30, min_stock: 5, allow_whole: true, allow_clean: true, allow_fillet: true, allow_steak: true, category_id: '1' },
-  { id: '3', name: 'Pargo', price: 3000, unit: 'kg', stock_quantity: 20, min_stock: 5, allow_whole: true, allow_clean: true, allow_fillet: true, allow_steak: true, category_id: '1' },
-  { id: '4', name: 'Camarão Grande', price: 4500, unit: 'kg', stock_quantity: 15, min_stock: 3, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2' },
-  { id: '5', name: 'Polvo', price: 5000, unit: 'kg', stock_quantity: 10, min_stock: 2, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2' },
-  { id: '6', name: 'Lingueirão', price: 3500, unit: 'kg', stock_quantity: 8, min_stock: 2, allow_whole: true, allow_clean: true, allow_fillet: false, allow_steak: false, category_id: '2' },
+  { id: '1', name: 'Sardinha',       price: 1500, unit: 'kg', stock_quantity: 50, min_stock: 10, allow_whole: true,  allow_clean: true,  allow_fillet: false, allow_steak: false, category_id: '1', image_url: '' },
+  { id: '2', name: 'Camarão Grande', price: 4500, unit: 'kg', stock_quantity: 15, min_stock: 3,  allow_whole: true,  allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
 ]
+
+function playNotificationSound() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const playBeep = (freq: number, start: number, duration: number) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain); gain.connect(ctx.destination)
+      osc.frequency.value = freq
+      osc.type = 'sine'
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration)
+      osc.start(ctx.currentTime + start)
+      osc.stop(ctx.currentTime + start + duration)
+    }
+    playBeep(880, 0,    0.12)
+    playBeep(1100, 0.15, 0.12)
+    playBeep(1320, 0.30, 0.20)
+  } catch { /* silencia se o browser bloquear */ }
+}
 
 export default function Admin() {
   const [activeTab, setActiveTab] = useState<Tab>('overview')
-  const [categories, setCategories] = useState<Category[]>(initialCategories)
-  const [products, setProducts] = useState<Product[]>(initialProducts)
-  const [orders, setOrders] = useState<Order[]>([])
-  const [employees, setEmployees] = useState<User[]>([])
-  const [cashFlow, setCashFlow] = useState<CashFlow[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [products,   setProducts]   = useState<Product[]>([])
+  const [orders,     setOrders]     = useState<Order[]>([])
+  const [employees,  setEmployees]  = useState<User[]>([])
+  const [cashFlow,   setCashFlow]   = useState<CashFlow[]>([])
+  const [purchases,  setPurchases]  = useState<Purchase[]>([])
+  const [storeSettings, setStoreSettings] = useState<StoreSettings>(getSettings())
 
   useEffect(() => {
-    // Load all data from localStorage
-    const storedOrders = localStorage.getItem('khrismir_orders')
-    if (storedOrders) setOrders(JSON.parse(storedOrders))
-    
-    const storedEmployees = localStorage.getItem('khrismir_employees')
-    if (storedEmployees) setEmployees(JSON.parse(storedEmployees))
-    
-    const storedCashFlow = localStorage.getItem('khrismir_cashflow')
-    if (storedCashFlow) setCashFlow(JSON.parse(storedCashFlow))
+    const load = (key: string, fallback: any) => {
+      try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback }
+    }
+    const loadAll = () => {
+      setOrders(load('khrismir_orders', []))
+      setEmployees(load('khrismir_employees', []))
+      setCashFlow(load('khrismir_cashflow', []))
+      setPurchases(load('khrismir_purchases', []))
+      setProducts(load('khrismir_products', initialProducts))
+      setCategories(load('khrismir_categories', initialCategories))
+      syncAllData()
+    }
+    loadAll()
 
-    const storedProducts = localStorage.getItem('khrismir_products')
-    if (storedProducts) setProducts(JSON.parse(storedProducts))
-    else localStorage.setItem('khrismir_products', JSON.stringify(initialProducts))
+    // Sincronização automática: puxa do Supabase e empurra dados locais na primeira abertura
+    const autoSync = async () => {
+      await pullAll()
+      loadAll()
+      if (isSupabaseReady()) {
+        const alreadySynced = localStorage.getItem('khrismir_auto_synced')
+        if (!alreadySynced) {
+          const result = await pushAll()
+          if (result.ok) {
+            localStorage.setItem('khrismir_auto_synced', '1')
+            toast.success('✅ Dados sincronizados com a cloud!')
+          } else {
+            const erros = result.details.filter(d => d.startsWith('❌'))
+            const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
+            toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
+            console.warn('[autoSync]', result.details)
+          }
+        } else {
+          pushAll()
+        }
+      }
+    }
+    autoSync()
 
-    const storedCategories = localStorage.getItem('khrismir_categories')
-    if (storedCategories) setCategories(JSON.parse(storedCategories))
-    else localStorage.setItem('khrismir_categories', JSON.stringify(initialCategories))
+    // ── Realtime: novas encomendas dos clientes web ───────────
+    if (!isSupabaseReady() || !supabase) return
+
+    const notifiedIds = new Set<string>()
+    let channelRef: ReturnType<typeof supabase.channel> | null = null
+
+    const subscribeOrders = () => {
+      if (channelRef) supabase!.removeChannel(channelRef)
+
+      channelRef = supabase!
+        .channel('admin-orders-main')
+        .on('broadcast', { event: 'new_order' }, ({ payload }) => {
+          if (!payload?.id || notifiedIds.has(payload.id)) return
+          notifiedIds.add(payload.id)
+          setTimeout(() => pullAll().then(() => loadAll()), 600)
+          playNotificationSound()
+          toast(`🛒 Nova encomenda: ${payload.order_number}`, {
+            description: `${payload.customer_name || 'Cliente'} • ${(payload.total || 0).toLocaleString()} AOA`,
+            duration: 8000,
+            action: { label: 'Ver', onClick: () => setActiveTab('orders') },
+          })
+        })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, payload => {
+          const newOrder = { ...(payload.new as Order), items: [] }
+          if (notifiedIds.has(newOrder.id)) return
+          setOrders(prev => {
+            if (prev.some(o => o.id === newOrder.id)) return prev
+            const updated = [newOrder, ...prev]
+            localStorage.setItem('khrismir_orders', JSON.stringify(updated))
+            return updated
+          })
+          notifiedIds.add(newOrder.id)
+          playNotificationSound()
+          toast(`🛒 Nova encomenda: ${(payload.new as Order).order_number}`, {
+            description: `${(payload.new as Order).customer_name || 'Cliente'} • ${((payload.new as Order).total || 0).toLocaleString()} AOA`,
+            duration: 8000,
+            action: { label: 'Ver', onClick: () => setActiveTab('orders') },
+          })
+        })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, payload => {
+          const updated = payload.new as Order
+          setOrders(prev => {
+            const next = prev.map(o => o.id === updated.id ? { ...o, status: updated.status, updated_at: updated.updated_at } : o)
+            localStorage.setItem('khrismir_orders', JSON.stringify(next))
+            return next
+          })
+        })
+        .subscribe(status => {
+          // Reconecta automaticamente se o canal cair
+          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setTimeout(subscribeOrders, 3000)
+          }
+        })
+    }
+
+    subscribeOrders()
+
+    // Refresh periódico a cada 20 s como fallback — garante sync mesmo sem Realtime
+    const interval = setInterval(() => pullAll().then(() => loadAll()), 20000)
+
+    return () => {
+      if (channelRef) supabase!.removeChannel(channelRef)
+      clearInterval(interval)
+    }
   }, [])
 
-  // Overview stats
-  const todayOrders = orders.filter(o => new Date(o.created_at).toDateString() === new Date().toDateString())
-  const todayTotal = todayOrders.reduce((sum, o) => sum + o.total, 0)
-  const lowStockProducts = products.filter(p => p.stock_quantity <= p.min_stock)
+  const todayTotal = orders
+    .filter(o => new Date(o.created_at).toDateString() === new Date().toDateString())
+    .reduce((sum, o) => sum + o.total, 0)
+  const lowStock = products.filter(p => p.stock_quantity <= p.min_stock)
+  const pendingOrders = orders.filter(o => o.status === 'pendente').length
 
-  const tabs = [
-    { id: 'overview', label: 'Visão Geral', icon: TrendingUp },
-    { id: 'products', label: 'Produtos', icon: Package },
-    { id: 'categories', label: 'Categorias', icon: Package },
-    { id: 'orders', label: 'Pedidos', icon: FileText },
-    { id: 'employees', label: 'Funcionários', icon: Users },
-    { id: 'cashflow', label: 'Fluxo de Caixa', icon: DollarSign },
-    { id: 'purchases', label: 'Compras', icon: Package },
-    { id: 'reports', label: 'Relatórios', icon: FileText },
-    { id: 'agt', label: 'AGT', icon: FileText },
-    { id: 'settings', label: 'Configurações', icon: Settings },
-    { id: 'system', label: 'Sistema', icon: Database },
+  const expiringProducts = products.filter(p => {
+    if (!p.expiry_date) return false
+    const days = Math.ceil((new Date(p.expiry_date).getTime() - Date.now()) / 86400000)
+    return days <= 7 && days >= 0
+  })
+
+  const tabs: { id: Tab; label: string; icon: React.ElementType; badge?: number }[] = [
+    { id: 'overview',   label: 'Visão Geral',   icon: TrendingUp, badge: expiringProducts.length > 0 ? expiringProducts.length : undefined },
+    { id: 'orders',     label: 'Encomendas',    icon: ShoppingBag, badge: pendingOrders },
+    { id: 'products',   label: 'Produtos',      icon: Package                      },
+    { id: 'categories', label: 'Categorias',    icon: Filter                       },
+    { id: 'employees',  label: 'Equipa',        icon: Users                        },
+    { id: 'customers',  label: 'Clientes',      icon: UserCheck                    },
+    { id: 'cashflow',   label: 'Financeiro',    icon: Wallet                       },
+    { id: 'purchases',  label: 'Compras/Stock', icon: Receipt                      },
+    { id: 'suppliers',  label: 'Fornecedores',  icon: Truck                        },
+    { id: 'returns',    label: 'Devoluções',    icon: RotateCcw                    },
+    { id: 'loyalty',    label: 'Fidelização',   icon: Star                         },
+    { id: 'calendar',   label: 'Calendário',    icon: CalendarDays                 },
+    { id: 'delivery',   label: 'Zonas Entrega', icon: MapPin                       },
+    { id: 'promos',     label: 'Promoções',     icon: Tag                          },
+    { id: 'agt',        label: 'AGT / Fiscal',  icon: FileText                     },
+    { id: 'settings',   label: 'Configurações', icon: Settings                     },
+    { id: 'system',     label: 'Sistema',       icon: Database                     },
   ]
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6">
-      {/* Sidebar */}
-      <div className="lg:w-64 bg-white rounded-xl shadow-lg p-4 h-fit">
-        <h2 className="font-bold text-lg mb-4 px-2">Painel Admin</h2>
+    <div className="flex flex-col lg:flex-row gap-6 p-4 lg:p-0">
+      <div className="lg:w-64 bg-white rounded-2xl shadow-xl p-4 h-fit sticky top-4">
+        <div className="flex items-center gap-3 px-2 mb-6 text-cyan-600">
+          <Database className="w-6 h-6" />
+          <h2 className="font-black text-xl tracking-tight">Khrismir Admin</h2>
+        </div>
         <nav className="space-y-1">
           {tabs.map(tab => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id as Tab)}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition ${activeTab === tab.id ? 'bg-cyan-600 text-white' : 'hover:bg-gray-100'}`}
-            >
-              <tab.icon className="w-5 h-5" />
-              {tab.label}
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                activeTab === tab.id ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-200' : 'text-gray-500 hover:bg-gray-100'
+              }`}>
+              <tab.icon className="w-4 h-4 shrink-0" />
+              <span className="flex-1 text-left">{tab.label}</span>
+              {tab.badge ? (
+                <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{tab.badge}</span>
+              ) : null}
             </button>
           ))}
         </nav>
       </div>
 
-      {/* Content */}
-      <div className="flex-1">
-        {activeTab === 'overview' && <OverviewTab orders={todayOrders} total={todayTotal} lowStock={lowStockProducts} products={products} />}
-        {activeTab === 'products' && <ProductsTab products={products} setProducts={setProducts} categories={categories} />}
+      <div className="flex-1 min-h-[80vh]">
+        {activeTab === 'overview'   && <OverviewTab orders={orders} total={todayTotal} lowStock={lowStock} products={products} />}
+        {activeTab === 'orders'     && <OrdersTab orders={orders} storeSettings={storeSettings} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
+        {activeTab === 'products'   && <ProductsTab products={products} setProducts={setProducts} categories={categories} />}
         {activeTab === 'categories' && <CategoriesTab categories={categories} setCategories={setCategories} />}
-        {activeTab === 'orders' && <OrdersTab orders={orders} setOrders={setOrders} />}
-        {activeTab === 'employees' && <EmployeesTab employees={employees} setEmployees={setEmployees} />}
-        {activeTab === 'cashflow' && <CashFlowTab cashFlow={cashFlow} setCashFlow={setCashFlow} />}
-        {activeTab === 'purchases' && <PurchasesTab products={products} setProducts={setProducts} cashFlow={cashFlow} setCashFlow={setCashFlow} />}
-        {activeTab === 'reports' && <ReportsTab orders={orders} />}
-        {activeTab === 'agt' && <AGTTab />}
-        {activeTab === 'settings' && <SettingsTab />}
-        {activeTab === 'system' && <SystemTab categories={categories} products={products} />}
+        {activeTab === 'employees'  && <EmployeesTab employees={employees} setEmployees={setEmployees} />}
+        {activeTab === 'customers'  && <CustomersTab orders={orders} />}
+        {activeTab === 'cashflow'   && <CashFlowTab cashFlow={cashFlow} setCashFlow={setCashFlow} />}
+        {activeTab === 'purchases'  && (
+          <PurchasesTab products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} />
+        )}
+        {activeTab === 'suppliers'  && <SuppliersTab />}
+        {activeTab === 'returns'    && <ReturnsTab orders={orders} products={products} setProducts={setProducts} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
+        {activeTab === 'loyalty'    && <LoyaltyTab orders={orders} />}
+        {activeTab === 'calendar'   && <CalendarTab orders={orders} />}
+        {activeTab === 'delivery'   && <DeliveryTab />}
+        {activeTab === 'promos'     && <PromosTab />}
+        {activeTab === 'agt'        && <AGTTab orders={orders} storeSettings={storeSettings} purchases={purchases} />}
+        {activeTab === 'settings'   && <SettingsTab settings={storeSettings} onSave={s => { setStoreSettings(s); saveSettings(s); syncSettings(s) }} />}
+        {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
       </div>
     </div>
   )
 }
 
+/* ─── VISÃO GERAL ─── */
+const CHART_COLORS = ['#06b6d4', '#3b82f6', '#10b981']
+
 function OverviewTab({ orders, total, lowStock, products }: { orders: Order[]; total: number; lowStock: Product[]; products: Product[] }) {
-  const pendingOrders = orders.filter(o => o.status === 'pendente')
-  
+  const [cfSummary, setCfSummary] = useState(() => getCashFlowSummary())
+  useEffect(() => { syncAllData(); setCfSummary(getCashFlowSummary()) }, [])
+
+  const last7 = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i))
+    const ds = d.toDateString()
+    const day = orders.filter(o => new Date(o.created_at).toDateString() === ds)
+    return { dia: d.toLocaleDateString('pt-AO', { weekday: 'short', day: 'numeric' }), total: day.reduce((s, o) => s + o.total, 0), pedidos: day.length }
+  })
+  const byPayment = ['multicaixa', 'express', 'dinheiro'].map(t => ({ name: t.charAt(0).toUpperCase() + t.slice(1), value: orders.filter(o => o.payment_type === t).length })).filter(p => p.value > 0)
+  const monthTotal = cfSummary.monthIncome
+  const monthProfit = cfSummary.monthIncome - cfSummary.monthExpense
+  const expiringProducts = products.filter(p => {
+    if (!p.expiry_date) return false
+    const days = Math.ceil((new Date(p.expiry_date).getTime() - Date.now()) / 86400000)
+    return days <= 7 && days >= 0
+  })
+
   return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Visão Geral</h2>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <div className="flex items-center gap-4">
-            <div className="bg-cyan-100 p-3 rounded-full">
-              <TrendingUp className="w-6 h-6 text-cyan-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Vendas Hoje</p>
-              <p className="text-2xl font-bold">{total.toLocaleString('pt-AO')} AOA</p>
-            </div>
-          </div>
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <h2 className="text-2xl font-bold text-gray-800">Dashboard</h2>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-gradient-to-br from-green-500 to-emerald-600 p-5 rounded-2xl text-white shadow-lg">
+          <p className="opacity-80 text-xs font-medium uppercase">Vendas Hoje</p>
+          <h3 className="text-2xl font-black mt-1">{total.toLocaleString()} Kz</h3>
         </div>
-        
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <div className="flex items-center gap-4">
-            <div className="bg-yellow-100 p-3 rounded-full">
-              <Package className="w-6 h-6 text-yellow-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Pedidos Pendentes</p>
-              <p className="text-2xl font-bold">{pendingOrders.length}</p>
-            </div>
-          </div>
+        <div className="bg-gradient-to-br from-blue-500 to-cyan-600 p-5 rounded-2xl text-white shadow-lg">
+          <p className="opacity-80 text-xs font-medium uppercase">Vendas Mês</p>
+          <h3 className="text-2xl font-black mt-1">{monthTotal.toLocaleString()} Kz</h3>
         </div>
-        
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <div className="flex items-center gap-4">
-            <div className="bg-red-100 p-3 rounded-full">
-              <Package className="w-6 h-6 text-red-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Stock Baixo</p>
-              <p className="text-2xl font-bold">{lowStock.length}</p>
-            </div>
-          </div>
+        <div className={`p-5 rounded-2xl shadow-lg text-white ${monthProfit >= 0 ? 'bg-gradient-to-br from-purple-500 to-violet-600' : 'bg-gradient-to-br from-red-500 to-rose-600'}`}>
+          <p className="opacity-80 text-xs font-medium uppercase">Lucro Mês</p>
+          <h3 className="text-2xl font-black mt-1">{monthProfit >= 0 ? '+' : ''}{monthProfit.toLocaleString()} Kz</h3>
         </div>
-        
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <div className="flex items-center gap-4">
-            <div className="bg-green-100 p-3 rounded-full">
-              <Package className="w-6 h-6 text-green-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Total Produtos</p>
-              <p className="text-2xl font-bold">{products.length}</p>
-            </div>
-          </div>
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+          <p className="text-gray-400 text-xs font-medium uppercase">Alertas Stock</p>
+          <h3 className={`text-2xl font-black mt-1 ${lowStock.length > 0 ? 'text-red-500' : 'text-gray-800'}`}>{lowStock.length} itens</h3>
         </div>
       </div>
 
-      {/* Low Stock Alert */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white p-6 rounded-2xl shadow-sm">
+          <h3 className="font-bold mb-4 text-gray-700">Vendas – Últimos 7 Dias</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={last7}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="dia" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(v: any) => [`${Number(v).toLocaleString()} Kz`, 'Total']} />
+              <Bar dataKey="total" fill="#06b6d4" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="bg-white p-6 rounded-2xl shadow-sm">
+          <h3 className="font-bold mb-4 text-gray-700">Pedidos por Pagamento</h3>
+          {byPayment.length > 0 ? (
+            <ResponsiveContainer width="100%" height={200}>
+              <PieChart>
+                <Pie data={byPayment} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={75}
+                  label={({ name, value }) => `${name}: ${value}`} labelLine={false}>
+                  {byPayment.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : <p className="text-center text-gray-400 py-16 text-sm">Sem dados ainda</p>}
+        </div>
+      </div>
+
       {lowStock.length > 0 && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <h3 className="font-bold text-red-800 mb-2">⚠️ Alerta de Stock Baixo</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+        <div className="bg-red-50 border border-red-100 rounded-2xl p-6">
+          <h4 className="text-red-800 font-bold mb-3 flex items-center gap-2"><Package className="w-5 h-5" /> Reposição Necessária</h4>
+          <div className="flex flex-wrap gap-2">
             {lowStock.map(p => (
-              <div key={p.id} className="bg-white p-3 rounded-lg">
-                <p className="font-medium">{p.name}</p>
-                <p className="text-sm text-red-600">Stock: {p.stock_quantity}kg (mín: {p.min_stock}kg)</p>
-              </div>
+              <span key={p.id} className="bg-white border border-red-200 px-3 py-1 rounded-full text-xs font-semibold text-red-600">
+                {p.name}: {p.stock_quantity} {p.unit}
+              </span>
             ))}
           </div>
         </div>
       )}
 
-      {/* Recent Orders */}
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h3 className="font-bold mb-4">Últimos Pedidos</h3>
-        <div className="space-y-2">
-          {orders.slice(0, 5).map(order => (
-            <div key={order.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
-              <div>
-                <p className="font-medium">#{order.order_number}</p>
-                <p className="text-sm text-gray-500">{new Date(order.created_at).toLocaleString('pt-AO')}</p>
-              </div>
-              <div className="text-right">
-                <p className="font-bold">{order.total.toLocaleString('pt-AO')} AOA</p>
-                <span className={`text-xs px-2 py-1 rounded-full ${order.status === 'pendente' ? 'bg-yellow-100' : order.status === 'pronto' ? 'bg-green-100' : 'bg-gray-100'}`}>
-                  {order.status}
+      {expiringProducts.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6">
+          <h4 className="text-amber-800 font-bold mb-3 flex items-center gap-2"><AlertTriangle className="w-5 h-5" /> Produtos a Expirar em 7 Dias</h4>
+          <div className="flex flex-wrap gap-2">
+            {expiringProducts.map(p => {
+              const days = Math.ceil((new Date(p.expiry_date!).getTime() - Date.now()) / 86400000)
+              return (
+                <span key={p.id} className="bg-white border border-amber-200 px-3 py-1 rounded-full text-xs font-semibold text-amber-700">
+                  {p.name}: {days === 0 ? 'hoje!' : `${days}d`}
                 </span>
-              </div>
-            </div>
-          ))}
+              )
+            })}
+          </div>
         </div>
-      </div>
+      )}
+
+      <AppQRCard />
     </div>
   )
 }
 
-function ProductsTab({ products, setProducts, categories }: { products: Product[]; setProducts: (p: Product[]) => void; categories: Category[] }) {
-  const [search, setSearch] = useState('')
-  const [showForm, setShowForm] = useState(false)
-  const [editProduct, setEditProduct] = useState<Product | null>(null)
-  const [form, setForm] = useState({ name: '', price: 0, stock_quantity: 0, min_stock: 5, category_id: '1', allow_whole: true, allow_clean: true, allow_fillet: false, allow_steak: false })
+/* ─── CARTÃO QR CODE (partilha com clientes) ─── */
+const APP_URL = 'https://peixaria-khrismir.vercel.app'
 
-  const filtered = products.filter(p => p.name.toLowerCase().includes(search.toLowerCase()))
+function AppQRCard() {
+  const [showModal, setShowModal] = useState(false)
 
-  const saveProduct = () => {
-    if (!form.name || form.price <= 0) {
-      toast.error('Preencha os campos obrigatórios')
-      return
-    }
-    
-    let updatedProducts: Product[]
-    if (editProduct) {
-      updatedProducts = products.map(p => p.id === editProduct.id ? { ...p, ...form } : p)
-      toast.success('Produto atualizado!')
-    } else {
-      const newProduct: Product = { ...form, id: Date.now().toString(), unit: 'kg' }
-      updatedProducts = [...products, newProduct]
-      toast.success('Produto criado!')
-    }
-    
-    setProducts(updatedProducts)
-    localStorage.setItem('khrismir_products', JSON.stringify(updatedProducts))
-    setShowForm(false)
-    setEditProduct(null)
-    setForm({ name: '', price: 0, stock_quantity: 0, min_stock: 5, category_id: '1', allow_whole: true, allow_clean: true, allow_fillet: false, allow_steak: false })
-  }
-
-  const deleteProduct = (id: string) => {
-    if (!confirm('Tem certeza?')) return
-    const updated = products.filter(p => p.id !== id)
-    setProducts(updated)
-    localStorage.setItem('khrismir_products', JSON.stringify(updated))
-    toast.success('Produto eliminado!')
+  const handlePrint = () => {
+    const win = window.open('', '_blank', 'width=500,height=620')
+    if (!win) return
+    win.document.write(`<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8"/>
+  <title>QR Code — Peixaria Khrismir</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box }
+    body { font-family: Arial, sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; background:#f0f9ff }
+    .card { background:white; border-radius:20px; padding:40px 36px; text-align:center; box-shadow:0 4px 24px rgba(0,0,0,.12); max-width:380px; width:100% }
+    .logo { font-size:26px; font-weight:900; color:#0891b2; margin-bottom:4px }
+    .sub  { font-size:13px; color:#64748b; margin-bottom:24px }
+    svg   { display:block; margin:0 auto 20px }
+    .cta  { font-size:15px; font-weight:700; color:#0f172a; margin-bottom:8px }
+    .url  { font-size:12px; color:#0891b2; word-break:break-all; background:#f0f9ff; padding:8px 12px; border-radius:8px; font-family:monospace }
+    .steps { margin-top:20px; text-align:left; font-size:12px; color:#64748b; line-height:1.8 }
+    .steps strong { color:#0f172a }
+    @media print { body { background:white } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🐟 Peixaria Khrismir</div>
+    <div class="sub">Lubango · Huíla · Angola</div>
+    <svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">
+      ${win.document.getElementById('qr-svg-content')?.innerHTML || ''}
+    </svg>
+    <div class="cta">Aceda à nossa loja online</div>
+    <div class="url">${APP_URL}</div>
+    <div class="steps">
+      <strong>Como usar:</strong><br/>
+      📱 Android — abrir o Chrome e apontar a câmara<br/>
+      🍎 iPhone — abrir a Câmara e tocar na notificação<br/>
+      💻 Mac — abrir o link no browser
+    </div>
+  </div>
+  <script>
+    // Copiar o SVG gerado pelo React
+    const placeholder = document.querySelector('svg');
+    const source = window.opener?.document.getElementById('admin-qr-svg');
+    if (source && placeholder) placeholder.outerHTML = source.outerHTML;
+    setTimeout(() => window.print(), 400);
+  </script>
+</body>
+</html>`)
+    win.document.close()
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">Produtos</h2>
-        <button onClick={() => setShowForm(true)} className="bg-cyan-600 text-white px-4 py-2 rounded-lg flex items-center gap-2">
-          <Plus className="w-4 h-4" /> Novo Produto
-        </button>
+    <>
+      <div className="bg-gradient-to-r from-cyan-600 to-blue-600 rounded-2xl p-6 text-white flex flex-col md:flex-row items-center justify-between gap-6">
+        <div>
+          <h3 className="text-lg font-bold flex items-center gap-2"><QrCode className="w-5 h-5" /> Partilhar App com Clientes</h3>
+          <p className="text-cyan-100 text-sm mt-1">Os clientes fazem encomendas directamente pelo telemóvel ou computador.</p>
+          <p className="mt-2 font-mono text-xs bg-white/20 px-3 py-1.5 rounded-lg inline-block">{APP_URL}</p>
+        </div>
+        <div className="flex gap-3 flex-shrink-0">
+          <button onClick={() => setShowModal(true)}
+            className="flex items-center gap-2 bg-white text-cyan-700 px-5 py-2.5 rounded-xl font-bold hover:bg-cyan-50 transition text-sm">
+            <QrCode className="w-4 h-4" /> Ver QR Code
+          </button>
+          <button onClick={() => { navigator.clipboard?.writeText(APP_URL); toast.success('Link copiado!') }}
+            className="flex items-center gap-2 bg-white/20 text-white border border-white/30 px-5 py-2.5 rounded-xl font-bold hover:bg-white/30 transition text-sm">
+            <Share2 className="w-4 h-4" /> Copiar Link
+          </button>
+        </div>
       </div>
 
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-        <input
-          type="text"
-          placeholder="Buscar produtos..."
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg"
-        />
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left">Nome</th>
-              <th className="px-4 py-3 text-left">Categoria</th>
-              <th className="px-4 py-3 text-right">Preço</th>
-              <th className="px-4 py-3 text-right">Stock</th>
-              <th className="px-4 py-3 text-center">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(p => (
-              <tr key={p.id} className="border-t">
-                <td className="px-4 py-3 font-medium">{p.name}</td>
-                <td className="px-4 py-3 text-gray-500">{categories.find(c => c.id === p.category_id)?.name}</td>
-                <td className="px-4 py-3 text-right">{Number(p.price).toLocaleString('pt-AO')} AOA/kg</td>
-                <td className="px-4 py-3 text-right">{p.stock_quantity}kg</td>
-                <td className="px-4 py-3 text-center space-x-2">
-                  <button onClick={() => { setEditProduct(p); setForm(p); setShowForm(true) }} className="text-cyan-600"><Edit className="w-4 h-4" /></button>
-                  <button onClick={() => deleteProduct(p.id)} className="text-red-600"><Trash2 className="w-4 h-4" /></button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Product Form Modal */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-xl">{editProduct ? 'Editar' : 'Novo'} Produto</h3>
-              <button onClick={() => { setShowForm(false); setEditProduct(null) }}><X className="w-6 h-6" /></button>
+      {showModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm text-center p-8">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-bold text-xl text-gray-800">QR Code da Loja</h3>
+              <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-6 h-6" /></button>
             </div>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Nome</label>
-                <input type="text" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full p-2 border rounded-lg" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Preço (AOA/kg)</label>
-                  <input type="number" value={form.price} onChange={e => setForm({ ...form, price: parseFloat(e.target.value) || 0 })} className="w-full p-2 border rounded-lg" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Categoria</label>
-                  <select value={form.category_id} onChange={e => setForm({ ...form, category_id: e.target.value })} className="w-full p-2 border rounded-lg">
-                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Stock (kg)</label>
-                  <input type="number" value={form.stock_quantity} onChange={e => setForm({ ...form, stock_quantity: parseFloat(e.target.value) || 0 })} className="w-full p-2 border rounded-lg" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Stock Mínimo</label>
-                  <input type="number" value={form.min_stock} onChange={e => setForm({ ...form, min_stock: parseFloat(e.target.value) || 0 })} className="w-full p-2 border rounded-lg" />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Tipos de Preparo</label>
-                <div className="grid grid-cols-4 gap-2">
-                  {[
-                    { key: 'allow_whole', label: 'Inteiro' },
-                    { key: 'allow_clean', label: 'Limpo' },
-                    { key: 'allow_fillet', label: 'Filé' },
-                    { key: 'allow_steak', label: 'Posta' },
-                  ].map(opt => (
-                    <label key={opt.key} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={form[opt.key as keyof typeof form] as boolean}
-                        onChange={e => setForm({ ...form, [opt.key]: e.target.checked })}
-                      />
-                      {opt.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <button onClick={saveProduct} className="w-full bg-cyan-600 text-white py-3 rounded-lg font-bold">
-                {editProduct ? 'Atualizar' : 'Criar'} Produto
+
+            <div id="admin-qr-svg" className="flex justify-center mb-4 bg-white p-4 rounded-xl border-4 border-cyan-100">
+              <QRCodeSVG
+                id="admin-qr-svg"
+                value={APP_URL}
+                size={220}
+                level="H"
+                includeMargin={false}
+                imageSettings={{
+                  src: '/icon.svg',
+                  x: undefined,
+                  y: undefined,
+                  height: 40,
+                  width: 40,
+                  excavate: true,
+                }}
+              />
+            </div>
+
+            <p className="text-sm font-bold text-gray-800 mb-1">Peixaria Khrismir</p>
+            <p className="text-xs text-cyan-600 font-mono mb-6">{APP_URL}</p>
+
+            <div className="text-left bg-gray-50 rounded-xl p-4 mb-6 text-xs text-gray-600 space-y-1">
+              <p>📱 <strong>Android:</strong> Chrome → apontar câmara ao QR</p>
+              <p>🍎 <strong>iPhone:</strong> Câmara → tocar na notificação</p>
+              <p>💻 <strong>Mac:</strong> Abrir o link no browser</p>
+              <p className="pt-1 text-gray-400">Depois: "Adicionar ao ecrã inicial" para instalar como app</p>
+            </div>
+
+            <div className="flex gap-3">
+              <button onClick={handlePrint}
+                className="flex-1 flex items-center justify-center gap-2 bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition text-sm">
+                <Printer className="w-4 h-4" /> Imprimir
+              </button>
+              <button onClick={() => { navigator.clipboard?.writeText(APP_URL); toast.success('Link copiado!') }}
+                className="flex-1 flex items-center justify-center gap-2 bg-gray-100 text-gray-700 py-3 rounded-xl font-bold hover:bg-gray-200 transition text-sm">
+                <Share2 className="w-4 h-4" /> Copiar Link
               </button>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 
-function CategoriesTab({ categories, setCategories }: { categories: Category[]; setCategories: (c: Category[]) => void }) {
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name: '', description: '' })
+/* ─── ENCOMENDAS ─── */
+function OrdersTab({ orders, setOrders, storeSettings }: { orders: Order[]; setOrders: (o: Order[]) => void; storeSettings: StoreSettings }) {
+  const [filter, setFilter] = useState<OrderStatus | 'all'>('all')
+  const [search, setSearch] = useState('')
 
-  const saveCategory = () => {
-    if (!form.name) {
-      toast.error('Nome é obrigatório')
-      return
-    }
-    const newCat: Category = { ...form, id: Date.now().toString() }
-    const updated = [...categories, newCat]
-    setCategories(updated)
-    localStorage.setItem('khrismir_categories', JSON.stringify(updated))
-    toast.success('Categoria criada!')
-    setShowForm(false)
-    setForm({ name: '', description: '' })
-  }
-
-  const deleteCategory = (id: string) => {
-    if (!confirm('Eliminar?')) return
-    const updated = categories.filter(c => c.id !== id)
-    setCategories(updated)
-    localStorage.setItem('khrismir_categories', JSON.stringify(updated))
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">Categorias</h2>
-        <button onClick={() => setShowForm(true)} className="bg-cyan-600 text-white px-4 py-2 rounded-lg flex items-center gap-2">
-          <Plus className="w-4 h-4" /> Nova Categoria
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {categories.map(cat => (
-          <div key={cat.id} className="bg-white rounded-xl shadow-lg p-4">
-            <h3 className="font-bold text-lg">{cat.name}</h3>
-            <p className="text-gray-500 text-sm">{cat.description}</p>
-            <button onClick={() => deleteCategory(cat.id)} className="text-red-500 text-sm mt-2">Eliminar</button>
-          </div>
-        ))}
-      </div>
-
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md">
-            <h3 className="font-bold text-xl mb-4">Nova Categoria</h3>
-            <div className="space-y-4">
-              <input type="text" placeholder="Nome" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full p-2 border rounded-lg" />
-              <input type="text" placeholder="Descrição" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="w-full p-2 border rounded-lg" />
-              <button onClick={saveCategory} className="w-full bg-cyan-600 text-white py-2 rounded-lg">Criar</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function OrdersTab({ orders, setOrders }: { orders: Order[]; setOrders: (o: Order[]) => void }) {
-  const [filter, setFilter] = useState('all')
-  const filtered = filter === 'all' ? orders : orders.filter(o => o.status === filter)
-
-  const updateStatus = (orderId: string, status: string) => {
-    const updated = orders.map(o => o.id === orderId ? { ...o, status: status as any } : o)
-    setOrders(updated)
-    localStorage.setItem('khrismir_orders', JSON.stringify(updated))
-    toast.success('Status atualizado!')
-  }
-
-  return (
-    <div className="space-y-4">
-      <h2 className="text-2xl font-bold">Pedidos</h2>
-      
-      <div className="flex gap-2 flex-wrap">
-        {['all', 'pendente', 'confirmado', 'preparando', 'pronto', 'entregue', 'cancelado'].map(s => (
-          <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1 rounded-full text-sm ${filter === s ? 'bg-cyan-600 text-white' : 'bg-white'}`}>
-            {s === 'all' ? 'Todos' : s}
-          </button>
-        ))}
-      </div>
-
-      <div className="space-y-3">
-        {filtered.map(order => (
-          <div key={order.id} className="bg-white rounded-xl shadow-lg p-4">
-            <div className="flex justify-between items-start mb-2">
-              <div>
-                <p className="font-bold">#{order.order_number}</p>
-                <p className="text-sm text-gray-500">{new Date(order.created_at).toLocaleString('pt-AO')}</p>
-              </div>
-              <select value={order.status} onChange={e => updateStatus(order.id, e.target.value)} className="border rounded-lg p-1 text-sm">
-                {['pendente', 'confirmado', 'preparando', 'pronto', 'entregue', 'cancelado'].map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-            </div>
-            <p className="font-bold text-lg">{order.total.toLocaleString('pt-AO')} AOA</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmployees: (e: User[]) => void }) {
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name: '', email: '', phone: '', role: 'employee' as 'employee' | 'admin', access_areas: ['pdv'] as string[] })
-
-  const generateEmail = (name: string) => {
-    const slug = name.toLowerCase().replace(/\s+/g, '.').replace(/[^a-z.]/g, '')
-    return `${slug}@khrismir.com`
-  }
-
-  const saveEmployee = () => {
-    if (!form.name || !form.email) {
-      toast.error('Preencha os campos')
-      return
-    }
-    const newEmp: Employee = {
-      id: Date.now().toString(),
-      email: form.email,
-      full_name: form.name,
-      phone: form.phone,
-      role: form.role,
-      access_areas: form.access_areas,
-      password: '123456' // Senha padrão
-    }
-    const updated = [...employees, newEmp]
-    setEmployees(updated)
-    localStorage.setItem('khrismir_employees', JSON.stringify(updated))
-    toast.success('Funcionário cadastrado! Senha: 123456')
-    setShowForm(false)
-    setForm({ name: '', email: '', phone: '', role: 'employee', access_areas: ['pdv'] })
-  }
-
-  const deleteEmployee = (id: string) => {
-    if (!confirm('Eliminar funcionário?')) return
-    const updated = employees.filter(e => e.id !== id)
-    setEmployees(updated)
-    localStorage.setItem('khrismir_employees', JSON.stringify(updated))
-  }
-
-  const toggleAccess = (area: string) => {
-    const current = form.access_areas
-    if (current.includes(area)) {
-      setForm({ ...form, access_areas: current.filter(a => a !== area) })
-    } else {
-      setForm({ ...form, access_areas: [...current, area] })
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">Funcionários</h2>
-        <button onClick={() => setShowForm(true)} className="bg-cyan-600 text-white px-4 py-2 rounded-lg flex items-center gap-2">
-          <Plus className="w-4 h-4" /> Novo Funcionário
-        </button>
-      </div>
-
-      <div className="grid gap-4">
-        {employees.map(emp => (
-          <div key={emp.id} className="bg-white rounded-xl shadow-lg p-4 flex justify-between items-center">
-            <div>
-              <p className="font-bold">{emp.full_name}</p>
-              <p className="text-sm text-gray-500">{emp.email}</p>
-              <p className="text-sm">{emp.phone}</p>
-              <span className="text-xs bg-cyan-100 px-2 py-1 rounded">{emp.role}</span>
-            </div>
-            <button onClick={() => deleteEmployee(emp.id)} className="text-red-500"><Trash2 className="w-5 h-5" /></button>
-          </div>
-        ))}
-      </div>
-
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg">
-            <h3 className="font-bold text-xl mb-4">Novo Funcionário</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Nome Completo</label>
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={e => setForm({ ...form, name: e.target.value, email: generateEmail(e.target.value) })}
-                  className="w-full p-2 border rounded-lg"
-                  placeholder="Nome"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Email (auto-gerado)</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={e => setForm({ ...form, email: e.target.value })}
-                  className="w-full p-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Telefone</label>
-                <input
-                  type="tel"
-                  value={form.phone}
-                  onChange={e => setForm({ ...form, phone: e.target.value })}
-                  className="w-full p-2 border rounded-lg"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">Cargo</label>
-                <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as 'employee' | 'admin' })} className="w-full p-2 border rounded-lg">
-                  <option value="employee">Funcionário</option>
-                  <option value="admin">Administrador</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-2">Áreas de Acesso</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { key: 'pdv', label: 'PDV' },
-                    { key: 'pedidos', label: 'Pedidos' },
-                    { key: 'relatorios', label: 'Relatórios' },
-                    { key: 'estoque', label: 'Estoque' },
-                    { key: 'admin', label: 'Admin' },
-                  ].map(area => (
-                    <label key={area.key} className="flex items-center gap-2">
-                      <input type="checkbox" checked={form.access_areas.includes(area.key)} onChange={() => toggleAccess(area.key)} />
-                      {area.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <button onClick={saveEmployee} className="w-full bg-cyan-600 text-white py-3 rounded-lg font-bold">Cadastrar</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function CashFlowTab({ cashFlow, setCashFlow }: { cashFlow: CashFlow[]; setCashFlow: (c: CashFlow[]) => void }) {
-  const [period, setPeriod] = useState<'today' | 'week' | 'month'>('today')
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ amount: 0, description: '', type: 'saída' as 'entrada' | 'saída' })
-
-  const now = new Date()
-  const filtered = cashFlow.filter(c => {
-    const date = c.created_at ? new Date(c.created_at) : new Date()
-    if (period === 'today') return date.toDateString() === now.toDateString()
-    if (period === 'week') {
-      const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-      return date >= weekAgo
-    }
-    if (period === 'month') {
-      return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear()
-    }
-    return true
+  const filtered = orders.filter(o => {
+    const ms = filter === 'all' || o.status === filter
+    const mq = !search || o.order_number.toLowerCase().includes(search.toLowerCase()) || (o.customer_name || '').toLowerCase().includes(search.toLowerCase())
+    return ms && mq
   })
 
-  const totalEntrada = filtered.filter(c => c.type === 'entrada').reduce((s, c) => s + c.amount, 0)
-  const totalSaida = filtered.filter(c => c.type === 'saída').reduce((s, c) => s + c.amount, 0)
-  const saldo = totalEntrada - totalSaida
-
-  const saveExpense = () => {
-    if (!form.description || form.amount <= 0) {
-      toast.error('Preencha os campos')
-      return
-    }
-    const newFlow: CashFlow = {
-      id: Date.now().toString(),
-      type: form.type,
-      amount: form.amount,
-      description: form.description,
-      created_at: new Date().toISOString()
-    }
-    const updated = [newFlow, ...cashFlow]
-    setCashFlow(updated)
-    localStorage.setItem('khrismir_cashflow', JSON.stringify(updated))
-    toast.success('Movimentação registrada!')
-    setShowForm(false)
-    setForm({ amount: 0, description: '', type: 'saída' })
+  const updateStatus = (id: string, status: OrderStatus) => {
+    setOrders(orders.map(o => o.id === id ? { ...o, status, updated_at: new Date().toISOString() } : o))
+    syncOrderStatus(id, status)
+    toast.success(`Estado: ${statusConfig[status].label}`)
   }
+
+  const cancelOrder = (id: string) => {
+    if (!confirm('Cancelar esta encomenda?')) return
+    updateStatus(id, 'cancelado')
+  }
+
+  const whatsApp = (order: Order) => {
+    const msg = `Olá! A sua encomenda *${order.order_number}* está ${statusConfig[order.status].label}. Total: ${order.total.toLocaleString()} AOA. Obrigado! 🐟`
+    return `https://wa.me/${storeSettings.whatsapp}?text=${encodeURIComponent(msg)}`
+  }
+
+  const pending = orders.filter(o => o.status === 'pendente').length
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">Fluxo de Caixa</h2>
-        <button onClick={() => setShowForm(true)} className="bg-cyan-600 text-white px-4 py-2 rounded-lg flex items-center gap-2">
-          <Plus className="w-4 h-4" /> Nova Despesa
+      {pending > 0 && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-2xl p-4 flex items-center gap-3">
+          <Clock className="w-5 h-5 text-yellow-600 shrink-0" />
+          <p className="text-yellow-800 font-medium">{pending} encomenda(s) aguardam confirmação</p>
+        </div>
+      )}
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <div className="flex flex-col md:flex-row gap-4 mb-6">
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por número ou cliente..."
+              className="w-full pl-10 pr-4 py-2 border rounded-xl text-sm" />
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {(['all', ...Object.keys(statusConfig)] as const).map(s => (
+              <button key={s} onClick={() => setFilter(s as any)}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap ${filter === s ? 'bg-cyan-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                {s === 'all' ? 'Todos' : statusConfig[s as OrderStatus].label}
+                {s === 'pendente' && pending > 0 && <span className="ml-1 bg-red-500 text-white text-xs rounded-full px-1">{pending}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {filtered.length === 0 ? <p className="text-center text-gray-500 py-8">Nenhuma encomenda encontrada</p> : (
+          <div className="space-y-4">
+            {filtered.map(order => (
+              <div key={order.id} className="border border-gray-100 rounded-2xl p-4 hover:shadow-md transition">
+                <div className="flex flex-wrap justify-between items-start gap-3 mb-3">
+                  <div>
+                    <h4 className="font-bold text-lg">{order.order_number}</h4>
+                    <p className="text-sm text-gray-500">{order.customer_name || 'Venda POS'} • {new Date(order.created_at).toLocaleString('pt-AO')}</p>
+                    <p className="text-xs text-gray-400 capitalize">{order.delivery_type === 'delivery' ? '🚚 Entrega' : '🏪 Retirada'} • {order.payment_type}</p>
+                    {order.delivery_address && <p className="text-xs text-gray-400">📍 {order.delivery_address}</p>}
+                    {order.discount_code && <p className="text-xs text-green-600">🏷️ Desconto: {order.discount_code} (-{(order.discount_amount || 0).toLocaleString()} Kz)</p>}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${statusConfig[order.status].color}`}>{statusConfig[order.status].label}</span>
+                    <span className="font-bold text-cyan-600">{order.total.toLocaleString()} AOA</span>
+                  </div>
+                </div>
+                <div className="bg-gray-50 rounded-xl p-3 mb-3 text-sm space-y-1">
+                  {order.items.map((item, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span>{item.product_name} ({item.preparation}) × {Number(item.quantity).toFixed(2)}</span>
+                      <span className="font-medium">{Number(item.total_price).toLocaleString()} AOA</span>
+                    </div>
+                  ))}
+                  {(order.delivery_fee ?? 0) > 0 && (
+                    <div className="flex justify-between text-gray-500">
+                      <span>Taxa de entrega ({order.delivery_zone})</span>
+                      <span>{(order.delivery_fee || 0).toLocaleString()} AOA</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {statusConfig[order.status].next && (
+                    <button onClick={() => updateStatus(order.id, statusConfig[order.status].next!)}
+                      className="flex-1 bg-cyan-600 text-white py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">
+                      → {statusConfig[statusConfig[order.status].next!].label}
+                    </button>
+                  )}
+                  {order.status !== 'cancelado' && order.status !== 'entregue' && (
+                    <button onClick={() => cancelOrder(order.id)}
+                      className="px-4 py-2 border border-red-200 text-red-600 rounded-xl text-sm font-medium hover:bg-red-50 transition">
+                      Cancelar
+                    </button>
+                  )}
+                  <button onClick={() => printInvoice(order, storeSettings)}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-gray-700 text-white rounded-xl text-sm font-medium hover:bg-gray-800 transition">
+                    <Printer className="w-4 h-4" /> Fatura
+                  </button>
+                  <a href={whatsApp(order)} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1.5 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 transition">
+                    <MessageCircle className="w-4 h-4" /> WhatsApp
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ─── PRODUTOS ─── */
+function ProductsTab({ products, setProducts, categories }: { products: Product[]; setProducts: (p: Product[]) => void; categories: Category[] }) {
+  const [modal, setModal]     = useState<'new' | 'edit' | null>(null)
+  const [editing, setEditing] = useState<Product | null>(null)
+  const [form, setForm]       = useState<Partial<Product>>({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' })
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const openNew = () => { setForm({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' }); setEditing(null); setModal('new') }
+  const openEdit = (p: Product) => { setForm({ ...p }); setEditing(p); setModal('edit') }
+  const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => setForm(f => ({ ...f, image_url: ev.target?.result as string }))
+    reader.readAsDataURL(file)
+  }
+  const save = (e: React.FormEvent) => {
+    e.preventDefault()
+    let updated: Product[]
+    if (modal === 'edit' && editing) {
+      updated = products.map(p => p.id === editing.id ? { ...p, ...form } as Product : p)
+      toast.success('Produto atualizado!')
+    } else {
+      updated = [...products, { ...form, id: Date.now().toString(), stock_quantity: 0 } as Product]
+      toast.success('Produto criado!')
+    }
+    setProducts(updated)
+    localStorage.setItem('khrismir_products', JSON.stringify(updated))
+    syncProducts(updated)
+    setModal(null)
+  }
+  const del = (id: string) => {
+    if (!confirm('Eliminar produto?')) return
+    const updated = products.filter(p => p.id !== id)
+    setProducts(updated); localStorage.setItem('khrismir_products', JSON.stringify(updated))
+    deleteProduct(id)
+    toast.success('Produto eliminado')
+  }
+
+  return (
+    <div className="bg-white rounded-2xl shadow-sm p-6">
+      <div className="flex justify-between items-center mb-8">
+        <h2 className="text-xl font-bold">Inventário</h2>
+        <button onClick={openNew} className="bg-cyan-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium hover:bg-cyan-700 transition">
+          <Plus className="w-4 h-4" /> Novo Produto
         </button>
       </div>
-
-      <div className="flex gap-2">
-        {(['today', 'week', 'month'] as const).map(p => (
-          <button key={p} onClick={() => setPeriod(p)} className={`px-4 py-2 rounded-lg ${period === p ? 'bg-cyan-600 text-white' : 'bg-white'}`}>
-            {p === 'today' ? 'Hoje' : p === 'week' ? 'Esta Semana' : 'Este Mês'}
-          </button>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
-          <p className="text-green-600 text-sm">Entradas</p>
-          <p className="text-2xl font-bold text-green-600">{totalEntrada.toLocaleString('pt-AO')} AOA</p>
-        </div>
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-          <p className="text-red-600 text-sm">Saídas</p>
-          <p className="text-2xl font-bold text-red-600">{totalSaida.toLocaleString('pt-AO')} AOA</p>
-        </div>
-        <div className="bg-cyan-50 border border-cyan-200 rounded-xl p-4">
-          <p className="text-cyan-600 text-sm">Saldo</p>
-          <p className="text-2xl font-bold text-cyan-600">{saldo.toLocaleString('pt-AO')} AOA</p>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left">Data</th>
-              <th className="px-4 py-3 text-left">Descrição</th>
-              <th className="px-4 py-3 text-right">Tipo</th>
-              <th className="px-4 py-3 text-right">Valor</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(cf => (
-              <tr key={cf.id} className="border-t">
-                <td className="px-4 py-3 text-sm">{cf.created_at ? new Date(cf.created_at).toLocaleString('pt-AO') : '-'}</td>
-                <td className="px-4 py-3">{cf.description}</td>
-                <td className="px-4 py-3 text-right">
-                  <span className={`px-2 py-1 rounded text-xs ${cf.type === 'entrada' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                    {cf.type}
+      <div className="overflow-x-auto">
+        <table className="w-full text-left">
+          <thead><tr className="text-gray-400 text-sm border-b">
+            <th className="pb-4">Produto</th><th className="pb-4">Preço (Kz/kg)</th><th className="pb-4">Stock</th><th className="pb-4 text-right">Acções</th>
+          </tr></thead>
+          <tbody className="divide-y">
+            {products.map(p => (
+              <tr key={p.id} className="group">
+                <td className="py-3 flex items-center gap-3">
+                  {p.image_url ? <img src={p.image_url} alt={p.name} className="w-10 h-10 rounded-lg object-cover" /> : <div className="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center text-xl">🐟</div>}
+                  <span className="font-semibold">{p.name}</span>
+                </td>
+                <td className="py-3">{Number(p.price).toLocaleString()}</td>
+                <td className="py-3">
+                  <span className={`px-2 py-1 rounded-lg text-xs font-bold ${p.stock_quantity <= p.min_stock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                    {p.stock_quantity} {p.unit}
                   </span>
                 </td>
-                <td className={`px-4 py-3 text-right font-bold ${cf.type === 'entrada' ? 'text-green-600' : 'text-red-600'}`}>
-                  {cf.type === 'entrada' ? '+' : '-'}{cf.amount.toLocaleString('pt-AO')} AOA
+                <td className="py-3 text-right flex justify-end gap-1">
+                  <button onClick={() => openEdit(p)} className="text-gray-400 hover:text-cyan-600 p-2 transition"><Edit className="w-4 h-4" /></button>
+                  <button onClick={() => del(p.id)} className="text-gray-400 hover:text-red-600 p-2 transition"><Trash2 className="w-4 h-4" /></button>
                 </td>
               </tr>
             ))}
@@ -698,767 +691,1402 @@ function CashFlowTab({ cashFlow, setCashFlow }: { cashFlow: CashFlow[]; setCashF
         </table>
       </div>
 
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md">
-            <h3 className="font-bold text-xl mb-4">Nova Despesa</h3>
+      {modal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form onSubmit={save} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-xl font-bold mb-6">{modal === 'edit' ? 'Editar Produto' : 'Novo Produto'}</h3>
             <div className="space-y-4">
-              <input type="text" placeholder="Descrição" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="w-full p-2 border rounded-lg" />
-              <input type="number" placeholder="Valor" value={form.amount} onChange={e => setForm({ ...form, amount: parseFloat(e.target.value) || 0 })} className="w-full p-2 border rounded-lg" />
-              <div className="flex gap-2">
-                <button onClick={() => setForm({ ...form, type: 'saída' })} className={`flex-1 p-2 rounded-lg ${form.type === 'saída' ? 'bg-red-600 text-white' : 'bg-gray-100'}`}>Despesa</button>
-                <button onClick={() => setForm({ ...form, type: 'entrada' })} className={`flex-1 p-2 rounded-lg ${form.type === 'entrada' ? 'bg-green-600 text-white' : 'bg-gray-100'}`}>Entrada</button>
+              <div onClick={() => fileRef.current?.click()}
+                className="border-2 border-dashed border-gray-200 rounded-xl p-4 text-center cursor-pointer hover:border-cyan-400 hover:bg-cyan-50 transition">
+                {form.image_url ? <img src={form.image_url} alt="preview" className="w-24 h-24 object-cover rounded-lg mx-auto" /> : (
+                  <div className="text-gray-400 text-sm"><Upload className="w-8 h-8 mx-auto mb-1 opacity-50" />Clique para escolher imagem</div>
+                )}
               </div>
-              <button onClick={saveExpense} className="w-full bg-cyan-600 text-white py-2 rounded-lg">Registar</button>
+              <input ref={fileRef} type="file" accept="image/*" onChange={handleImage} className="hidden" />
+              <input type="text" placeholder="Nome do Produto" required value={form.name || ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="w-full border p-3 rounded-xl" />
+              <div className="grid grid-cols-2 gap-3">
+                <input type="number" placeholder="Preço de Venda (AOA/kg)" required min="0" value={form.price || ''} onChange={e => setForm(f => ({ ...f, price: Number(e.target.value) }))} className="w-full border p-3 rounded-xl" />
+                <input type="number" placeholder="Preço de Custo (AOA/kg)" min="0" value={form.cost_price || ''} onChange={e => setForm(f => ({ ...f, cost_price: Number(e.target.value) }))} className="w-full border p-3 rounded-xl" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <input type="number" placeholder="Stock Mín." min="0" value={form.min_stock || ''} onChange={e => setForm(f => ({ ...f, min_stock: Number(e.target.value) }))} className="w-full border p-3 rounded-xl" />
+                <select value={form.unit || 'kg'} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))} className="w-full border p-3 rounded-xl">
+                  <option value="kg">kg</option><option value="un">unidade</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Data de Validade (opcional)</label>
+                <input type="date" value={form.expiry_date || ''} onChange={e => setForm(f => ({ ...f, expiry_date: e.target.value }))} className="w-full border p-3 rounded-xl" />
+              </div>
+              <select required value={form.category_id || ''} onChange={e => setForm(f => ({ ...f, category_id: e.target.value }))} className="w-full border p-3 rounded-xl">
+                <option value="">Selecione Categoria</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <div>
+                <p className="text-sm font-medium mb-2">Tipos de Preparo</p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[{ key: 'allow_whole', label: 'Inteiro' }, { key: 'allow_clean', label: 'Limpo' }, { key: 'allow_fillet', label: 'Filé' }, { key: 'allow_steak', label: 'Posta' }].map(opt => (
+                    <label key={opt.key} className="flex items-center gap-2 p-2 border rounded-xl cursor-pointer hover:bg-gray-50">
+                      <input type="checkbox" checked={!!(form as any)[opt.key]} onChange={e => setForm(f => ({ ...f, [opt.key]: e.target.checked }))} />
+                      <span className="text-sm">{opt.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <button type="submit" className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition">{modal === 'edit' ? 'Guardar' : 'Criar'}</button>
+              <button type="button" onClick={() => setModal(null)} className="w-full text-gray-400 text-sm hover:text-gray-600">Cancelar</button>
             </div>
-          </div>
+          </form>
         </div>
       )}
     </div>
   )
 }
 
-function ReportsTab({ orders }: { orders: Order[] }) {
-  const [period, setPeriod] = useState<'diario' | 'semanal' | 'mensal' | 'trimestral' | 'anual'>('diario')
-  
-  const now = new Date()
-  const filteredOrders = orders.filter(order => {
-    const orderDate = new Date(order.created_at)
-    switch (period) {
-      case 'diario':
-        return orderDate.toDateString() === now.toDateString()
-      case 'semanal': {
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-        return orderDate >= weekAgo
-      }
-      case 'mensal':
-        return orderDate.getMonth() === now.getMonth() && orderDate.getFullYear() === now.getFullYear()
-      case 'trimestral': {
-        const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1)
-        return orderDate >= quarterStart
-      }
-      case 'anual':
-        return orderDate.getFullYear() === now.getFullYear()
-      default:
-        return true
-    }
-  })
-
-  const totalSales = filteredOrders.reduce((s, o) => s + o.total, 0)
-  const avgTicket = filteredOrders.length > 0 ? totalSales / filteredOrders.length : 0
-
-  const byPayment = filteredOrders.reduce((acc, o) => {
-    acc[o.payment_type] = (acc[o.payment_type] || 0) + o.total
-    return acc
-  }, {} as Record<string, number>)
-
-  // Products most sold
-  const productSales: Record<string, number> = {}
-  filteredOrders.forEach(order => {
-    order.items?.forEach(item => {
-      productSales[item.product_name] = (productSales[item.product_name] || 0) + (item.quantity * item.unit_price)
-    })
-  })
-  const topProducts = Object.entries(productSales)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-
-  // Chart data based on period
-  let chartLabels: string[] = []
-  let chartValues: number[] = []
-  
-  if (period === 'diario') {
-    chartLabels = Array.from({ length: 24 }, (_, i) => `${i}h`)
-    chartValues = chartLabels.map(label => {
-      const hour = parseInt(label)
-      const hourOrders = filteredOrders.filter(o => {
-        const orderDate = new Date(o.created_at)
-        return orderDate.getHours() === hour
-      })
-      return hourOrders.reduce((s, o) => s + o.total, 0)
-    })
-  } else if (period === 'semanal') {
-    chartLabels = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
-    chartValues = chartLabels.map((_, idx) => {
-      const dayAgo = 6 - idx
-      const date = new Date(now.getTime() - dayAgo * 24 * 60 * 60 * 1000)
-      const dateStr = date.toISOString().split('T')[0]
-      const dayOrders = filteredOrders.filter(o => o.created_at?.startsWith(dateStr))
-      return dayOrders.reduce((s, o) => s + o.total, 0)
-    })
-  } else if (period === 'mensal') {
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-    chartLabels = Array.from({ length: Math.min(15, daysInMonth) }, (_, i) => `${i + 1}`)
-    chartValues = chartLabels.map(label => {
-      const day = parseInt(label)
-      const dateStr = new Date(now.getFullYear(), now.getMonth(), day).toISOString().split('T')[0]
-      const dayOrders = filteredOrders.filter(o => o.created_at?.startsWith(dateStr))
-      return dayOrders.reduce((s, o) => s + o.total, 0)
-    })
-  } else if (period === 'trimestral') {
-    chartLabels = ['Mês 1', 'Mês 2', 'Mês 3']
-    chartValues = chartLabels.map((_, idx) => {
-      const date = new Date(now.getFullYear(), now.getMonth() - (2 - idx), 1)
-      const monthOrders = filteredOrders.filter(o => {
-        const orderDate = new Date(o.created_at)
-        return orderDate.getMonth() === date.getMonth() && orderDate.getFullYear() === date.getFullYear()
-      })
-      return monthOrders.reduce((s, o) => s + o.total, 0)
-    })
-  } else if (period === 'anual') {
-    chartLabels = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
-    chartValues = chartLabels.map((_, idx) => {
-      const monthOrders = filteredOrders.filter(o => {
-        const orderDate = new Date(o.created_at)
-        return orderDate.getMonth() === idx && orderDate.getFullYear() === now.getFullYear()
-      })
-      return monthOrders.reduce((s, o) => s + o.total, 0)
-    })
+/* ─── CATEGORIAS ─── */
+function CategoriesTab({ categories, setCategories }: { categories: Category[]; setCategories: (c: Category[]) => void }) {
+  const [name, setName] = useState('')
+  const add = () => {
+    if (!name.trim()) return
+    const updated = [...categories, { id: Date.now().toString(), name: name.trim() }]
+    setCategories(updated); localStorage.setItem('khrismir_categories', JSON.stringify(updated))
+    syncCategories(updated)
+    setName(''); toast.success('Categoria adicionada')
   }
-
-  const handleExportPDF = () => {
-    const content = `
-PEIXARIA KHRISMIR - RELATÓRIO DE VENDAS
-Data: ${new Date().toLocaleDateString('pt-AO')}
-==========================================
-
-TOTAL VENDIDO: ${totalSales.toLocaleString('pt-AO')} AOA
-TICKET MÉDIO: ${avgTicket.toLocaleString('pt-AO')} AOA
-NÚMERO DE VENDAS: ${orders.length}
-
-VENDAS POR FORMA DE PAGAMENTO:
-${Object.entries(byPayment).map(([m, t]) => `- ${m}: ${t.toLocaleString('pt-AO')} AOA`).join('\n')}
-
-TOP 5 PRODUTOS:
-${topProducts.map(([p, v], i) => `${i+1}. ${p}: ${v.toLocaleString('pt-AO')} AOA`).join('\n')}
-
-==========================================
-NIF: 5001210092
-Software Certificado: 284/AGT/2024
-    `
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `relatorio-vendas-${new Date().toISOString().split('T')[0]}.txt`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success('Relatório exportado com sucesso!')
-  }
-
-  const handleExportSAFT = () => {
-    const saftContent = `<?xml version="1.0" encoding="UTF-8"?>
-<AuditFile xmlns="urn:OECD:UploadedFileSchema:2">
-  <Header>
-    <TaxRegistrationNumber>5001210092</TaxRegistrationNumber>
-    <TaxEntity>Peixaria Khrismir</TaxEntity>
-    <SoftwareCertificateNumber>284/AGT/2024</SoftwareCertificateNumber>
-    <CompanyName>Peixaria Khrismir</CompanyName>
-    <FiscalYear>${new Date().getFullYear()}</FiscalYear>
-    <StartDate>${new Date().getFullYear()}-01-01</StartDate>
-    <EndDate>${new Date().getFullYear()}-12-31</EndDate>
-    <CurrencyCode>AOA</CurrencyCode>
-  </Header>
-  <SalesInvoices>
-    ${orders.map((order) => `
-    <Invoice>
-      <InvoiceNo>PKH-${String(order.id).padStart(5, '0')}</InvoiceNo>
-      <InvoiceDate>${order.created_at?.split('T')[0] || new Date().toISOString().split('T')[0]}</InvoiceDate>
-      <CustomerID>${order.customer_id || '999999999'}</CustomerID>
-      <DocumentType>FR</DocumentType>
-      <PaymentType>${order.payment_type || 'Numerario'}</PaymentType>
-      <TaxPayable>0</TaxPayable>
-      <NetTotal>${order.total}</NetTotal>
-      <GrossTotal>${order.total}</GrossTotal>
-    </Invoice>`).join('')}
-  </SalesInvoices>
-</AuditFile>`
-    
-    const blob = new Blob([saftContent], { type: 'text/xml;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `SAFT-AO-${new Date().toISOString().split('T')[0]}.xml`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success('Ficheiro SAFT-AO exportado com sucesso!')
-  }
-
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">Relatórios</h2>
-        <div className="flex gap-2">
-          {(['diario', 'semanal', 'mensal', 'trimestral', 'anual'] as const).map(p => (
-            <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`px-3 py-1 rounded-full text-sm ${period === p ? 'bg-cyan-600 text-white' : 'bg-white'}`}
-            >
-              {p === 'diario' ? 'Diário' : p === 'semanal' ? 'Semanal' : p === 'mensal' ? 'Mensal' : p === 'trimestral' ? 'Trimestral' : 'Anual'}
+    <div className="bg-white rounded-2xl p-6 shadow-sm max-w-md">
+      <h2 className="text-xl font-bold mb-6">Categorias</h2>
+      <div className="flex gap-2 mb-6">
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Ex: Congelados"
+          onKeyDown={e => e.key === 'Enter' && add()} className="flex-1 border p-2 rounded-xl" />
+        <button onClick={add} className="bg-cyan-600 text-white px-4 rounded-xl font-bold hover:bg-cyan-700">+</button>
+      </div>
+      <div className="space-y-2">
+        {categories.map(c => (
+          <div key={c.id} className="flex justify-between p-3 bg-gray-50 rounded-xl font-medium text-gray-700">
+            {c.name}
+            <button onClick={() => { const u = categories.filter(x => x.id !== c.id); setCategories(u); localStorage.setItem('khrismir_categories', JSON.stringify(u)); syncCategories(u); deleteCategory(c.id) }} className="text-red-400 hover:text-red-600">
+              <Trash2 className="w-4 h-4" />
             </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <p className="text-gray-500 text-sm">Total Vendido</p>
-          <p className="text-3xl font-bold text-cyan-600">{totalSales.toLocaleString('pt-AO')} AOA</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <p className="text-gray-500 text-sm">Ticket Médio</p>
-          <p className="text-3xl font-bold text-cyan-600">{avgTicket.toLocaleString('pt-AO')} AOA</p>
-        </div>
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <p className="text-gray-500 text-sm">Total de Vendas</p>
-          <p className="text-3xl font-bold text-cyan-600">{orders.length}</p>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h3 className="font-bold mb-4">Vendas por Forma de Pagamento</h3>
-        {Object.keys(byPayment).length === 0 ? (
-          <p className="text-gray-500">Nenhuma venda registada</p>
-        ) : (
-          Object.entries(byPayment).map(([method, total]) => (
-            <div key={method} className="flex justify-between items-center py-2 border-b">
-              <span className="capitalize">{method}</span>
-              <span className="font-bold">{total.toLocaleString('pt-AO')} AOA</span>
-            </div>
-          ))
-        )}
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h3 className="font-bold mb-4">Produtos Mais Vendidos</h3>
-        {topProducts.length === 0 ? (
-          <p className="text-gray-500">Nenhum produto vendido</p>
-        ) : (
-          topProducts.map(([product, value], idx) => (
-            <div key={product} className="flex justify-between items-center py-2 border-b">
-              <span>{idx + 1}. {product}</span>
-              <span className="font-bold">{value.toLocaleString('pt-AO')} AOA</span>
-            </div>
-          ))
-        )}
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h3 className="font-bold mb-4">Evolução de Vendas ({period.charAt(0).toUpperCase() + period.slice(1)})</h3>
-        <div className="flex gap-2 items-end h-40">
-          {chartValues.map((val, idx) => (
-            <div key={idx} className="flex-1 flex flex-col items-center">
-              <div 
-                className="w-full bg-cyan-500 rounded-t" 
-                style={{ height: `${Math.max(10, (val / Math.max(...chartValues.filter(v => v > 0), 1)) * 100)}%` }}
-              />
-              <span className="text-xs mt-1 truncate w-full text-center">{chartLabels[idx]}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h3 className="font-bold mb-4">Exportação</h3>
-        <div className="flex gap-4">
-          <button 
-            onClick={handleExportPDF}
-            className="bg-cyan-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-cyan-700"
-          >
-            <Printer className="w-4 h-4" /> Exportar PDF
-          </button>
-          <button 
-            onClick={handleExportSAFT}
-            className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-green-700"
-          >
-            <FileText className="w-4 h-4" /> Gerar SAFT-AO
-          </button>
-        </div>
+          </div>
+        ))}
       </div>
     </div>
   )
 }
 
-function AGTTab() {
-  return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Acesso AGT</h2>
+/* ─── EQUIPA ─── */
+function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmployees: (e: User[]) => void }) {
+  const { createUser } = useAuthStore()
+  const [isOpen, setIsOpen]   = useState(false)
+  const [saving, setSaving]   = useState(false)
+  const [form, setForm]       = useState({ name: '', email: '', phone: '', password: '', role: 'employee' as 'employee' | 'admin' })
 
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="bg-green-100 p-2 rounded-full">
-            <span className="text-2xl">✓</span>
-          </div>
-          <div>
-            <p className="font-bold">Sistema Conectado à AGT</p>
-            <p className="text-sm text-gray-500">Última comunicação: agora</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 mb-6">
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-sm text-gray-500">NIF da Empresa</p>
-            <p className="font-bold text-lg">5001210092</p>
-          </div>
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-sm text-gray-500">Certificado</p>
-            <p className="font-bold text-lg">284/AGT/2024</p>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <h3 className="font-bold">Configurações Fiscais</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Regime de IVA</label>
-              <select className="w-full p-2 border rounded-lg">
-                <option>Geral</option>
-                <option>Simplificado</option>
-                <option>Exclusão</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Modo de Transmissão</label>
-              <select className="w-full p-2 border rounded-lg">
-                <option>Tempo Real</option>
-                <option>Diferido (SAFT)</option>
-              </select>
-            </div>
-          </div>
-
-          <button className="w-full bg-cyan-600 text-white py-3 rounded-lg font-bold">
-            Validar Comunicação
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SettingsTab() {
-  return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Configurações da Loja</h2>
-
-      <div className="bg-white rounded-xl shadow-lg p-6 space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-1">Nome da Loja</label>
-          <input type="text" defaultValue="Peixaria Khrismir" className="w-full p-2 border rounded-lg" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">Morada</label>
-          <input type="text" defaultValue="Centralidade da Quilemba, Lubango, Huíla" className="w-full p-2 border rounded-lg" />
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Telefone 1</label>
-            <input type="tel" defaultValue="929 970 984" className="w-full p-2 border rounded-lg" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Telefone 2</label>
-            <input type="tel" defaultValue="924 359 638" className="w-full p-2 border rounded-lg" />
-          </div>
-        </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">WhatsApp</label>
-          <input type="tel" defaultValue="929 970 984" className="w-full p-2 border rounded-lg" />
-        </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">NIF</label>
-          <input type="text" defaultValue="5001210092" className="w-full p-2 border rounded-lg" />
-        </div>
-        <button className="w-full bg-cyan-600 text-white py-3 rounded-lg font-bold">Guardar Alterações</button>
-      </div>
-    </div>
-  )
-}
-
-function SystemTab({ categories, products }: { categories: Category[]; products: Product[] }) {
-  const handleReset = () => {
-    if (!confirm('⚠️ Tem a certeza que deseja APAGAR TODOS OS DADOS? Esta ação não pode ser desfeita.')) return
-    if (!confirm('Confirme novamente o reset total...')) return
-    
-    localStorage.clear()
-    window.location.reload()
-    toast.success('Dados resetados!')
-  }
-
-  const handleImport = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.xlsx,.xls,.csv'
-    input.onchange = async () => {
-      toast.success('Funcionalidade de importação em desenvolvimento')
+  const add = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    const result = await createUser(form.email, form.password, form.name, form.phone, form.role)
+    if (result.ok) {
+      // Recarrega lista actualizada do localStorage (createUser já escreveu lá)
+      const updated: User[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
+      setEmployees(updated)
+      setIsOpen(false)
+      setForm({ name: '', email: '', phone: '', password: '', role: 'employee' })
+      toast.success(result.supabaseId ? '✅ Funcionário criado no Supabase!' : '✅ Acesso local criado!')
+    } else {
+      toast.error(result.error ?? 'Erro ao criar funcionário')
     }
-    input.click()
+    setSaving(false)
+  }
+
+  const remove = (id: string) => {
+    const upEmp = employees.filter(x => x.id !== id)
+    setEmployees(upEmp)
+    localStorage.setItem('khrismir_employees', JSON.stringify(upEmp))
+    const all = JSON.parse(localStorage.getItem('khrismir_clients') || '[]').filter((u: any) => u.id !== id)
+    localStorage.setItem('khrismir_clients', JSON.stringify(all))
+    toast.success('Funcionário removido')
   }
 
   return (
-    <div className="space-y-6">
-      <h2 className="text-2xl font-bold">Sistema</h2>
-
-      <div className="bg-white rounded-xl shadow-lg p-6 space-y-4">
-        <h3 className="font-bold">Gestão de Dados</h3>
-        
-        <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <p className="font-medium text-yellow-800">⚠️ Atenção</p>
-          <p className="text-sm text-yellow-700">Estas operações são irreversíveis. Faça um backup se necessário.</p>
-        </div>
-
-        <div className="flex gap-4">
-          <button onClick={handleImport} className="flex-1 bg-green-600 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2">
-            <Database className="w-5 h-5" /> Importar Excel
-          </button>
-          <button onClick={handleReset} className="flex-1 bg-red-600 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2">
-            <Trash2 className="w-5 h-5" /> Reset Total
-          </button>
-        </div>
+    <div className="bg-white rounded-2xl p-6 shadow-sm">
+      <div className="flex justify-between mb-8">
+        <h2 className="text-xl font-bold">Equipa de Trabalho</h2>
+        <button onClick={() => setIsOpen(true)} className="bg-gray-800 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm hover:bg-gray-900 transition">
+          <Plus className="w-4 h-4" /> Novo Funcionário
+        </button>
       </div>
-
-      <div className="bg-white rounded-xl shadow-lg p-6">
-        <h3 className="font-bold mb-4">Informações do Sistema</h3>
-        <div className="space-y-2 text-sm">
-          <p><strong>Versão:</strong> 1.0.0</p>
-          <p><strong>Database:</strong> LocalStorage (Simulado)</p>
-          <p><strong>Produtos:</strong> {products.length}</p>
-          <p><strong>Categorias:</strong> {categories.length}</p>
-        </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {employees.map(emp => (
+          <div key={emp.id} className="border p-4 rounded-2xl flex justify-between items-center bg-gray-50/50">
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="font-bold text-gray-800">{emp.full_name}</p>
+                {(emp as any).supabase_synced && (
+                  <span className="text-xs bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded-full font-medium">☁ Cloud</span>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 uppercase font-bold tracking-widest">{emp.role}</p>
+              {emp.email && <p className="text-xs text-gray-400">{emp.email}</p>}
+            </div>
+            <button onClick={() => remove(emp.id)} className="text-red-400 hover:text-red-600">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        ))}
       </div>
+      {isOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <form onSubmit={add} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl">
+            <h3 className="text-xl font-bold mb-2">Criar Conta de Acesso</h3>
+            <p className="text-xs text-gray-400 mb-6">Conta criada localmente e no Supabase (quando disponível)</p>
+            <div className="space-y-4">
+              <input type="text" placeholder="Nome Completo" required value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full border p-3 rounded-xl" />
+              <input type="email" placeholder="Email" required value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border p-3 rounded-xl" />
+              <input type="tel" placeholder="Telefone (opcional)" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className="w-full border p-3 rounded-xl" />
+              <input type="password" placeholder="Senha (mín. 6 caracteres)" required minLength={6} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className="w-full border p-3 rounded-xl" />
+              <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as any })} className="w-full border p-3 rounded-xl">
+                <option value="employee">Funcionário (POS)</option>
+                <option value="admin">Administrador</option>
+              </select>
+              <button type="submit" disabled={saving} className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition disabled:opacity-60">
+                {saving ? 'A criar...' : 'Criar'}
+              </button>
+              <button type="button" onClick={() => setIsOpen(false)} className="w-full text-gray-400 text-sm mt-2 hover:text-gray-600">Fechar</button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
 
-type PurchaseType = 'fornecedor' | 'interno'
-
-interface PurchaseItem {
-  name: string
-  quantity: number
-  unitPrice: number
-  total?: number
-}
-
-interface Purchase {
-  id: string
-  date: string
-  type: PurchaseType
-  supplier: string
-  items: PurchaseItem[]
-  total: number
-  paymentType: string
-  notes: string
-}
-
-function PurchasesTab({ products, setProducts, cashFlow, setCashFlow }: { 
-  products: Product[]; 
-  setProducts: React.Dispatch<React.SetStateAction<Product[]>>;
-  cashFlow: CashFlow[];
-  setCashFlow: React.Dispatch<React.SetStateAction<CashFlow[]>>;
-}) {
-  const [purchases, setPurchases] = useState<Purchase[]>([])
-  const [showForm, setShowForm] = useState(false)
-  const [formData, setFormData] = useState({
-    type: 'fornecedor' as PurchaseType,
-    supplier: '',
-    paymentType: 'Dinheiro',
-    notes: '',
-    items: [{ name: '', quantity: 1, unitPrice: 0, total: 0 }]
+/* ─── CLIENTES ─── */
+function CustomersTab({ orders }: { orders: Order[] }) {
+  const [search, setSearch] = useState('')
+  const [selectedClient, setSelectedClient] = useState<any | null>(null)
+  const [newPassModal, setNewPassModal] = useState<any | null>(null)
+  const [newPass, setNewPass] = useState('')
+  const [clients, setClients] = useState<any[]>(() => {
+    try { return JSON.parse(localStorage.getItem('khrismir_clients') || '[]').filter((c: any) => c.role === 'client') }
+    catch { return [] }
   })
 
   useEffect(() => {
-    const stored = localStorage.getItem('khrismir_purchases')
-    if (stored) setPurchases(JSON.parse(stored))
+    if (!isSupabaseReady() || !supabase) return
+
+    // Carrega todos os clientes do Supabase
+    supabase.from('profiles').select('*').eq('role', 'client').order('created_at', { ascending: false })
+      .then(({ data }) => {
+        if (!data) return
+        const local: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_clients') || '[]') } catch { return [] } })()
+        const supabaseIds = new Set(data.map((p: any) => p.id))
+        const localOnly = local.filter((c: any) => !supabaseIds.has(c.id) && c.role === 'client')
+        const merged = [...data, ...localOnly]
+        setClients(merged)
+        localStorage.setItem('khrismir_clients', JSON.stringify([...local.filter((c: any) => c.role !== 'client'), ...merged]))
+      })
+
+    // Realtime: notifica quando um novo cliente se regista
+    const channel = supabase
+      .channel('profiles-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'profiles', filter: 'role=eq.client' }, payload => {
+        setClients(prev => {
+          if (prev.some(c => c.id === (payload.new as any).id)) return prev
+          return [payload.new as any, ...prev]
+        })
+        toast(`👤 Novo cliente: ${(payload.new as any).full_name}`, { duration: 5000 })
+      })
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
   }, [])
 
-  const savePurchases = (newPurchases: Purchase[]) => {
-    setPurchases(newPurchases)
-    localStorage.setItem('khrismir_purchases', JSON.stringify(newPurchases))
+  const filtered = clients.filter((c: any) =>
+    !search || c.full_name?.toLowerCase().includes(search.toLowerCase()) || c.email?.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const clientOrders = (id: string) => orders.filter(o => o.customer_id === id)
+
+  const resetPass = () => {
+    if (!newPass || newPass.length < 6) { toast.error('Mínimo 6 caracteres'); return }
+    const all: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+    const idx = all.findIndex((c: any) => c.id === newPassModal.id)
+    if (idx === -1) { toast.error('Utilizador não encontrado'); return }
+    all[idx].password = CryptoJS.SHA256(newPass).toString()
+    localStorage.setItem('khrismir_clients', JSON.stringify(all))
+    toast.success('Senha redefinida com sucesso!')
+    setNewPassModal(null); setNewPass('')
   }
-
-  const addPurchase = () => {
-    const total = formData.items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0)
-    const newPurchase: Purchase = {
-      id: Date.now().toString(),
-      date: new Date().toISOString(),
-      type: formData.type,
-      supplier: formData.supplier,
-      items: formData.items,
-      total,
-      paymentType: formData.paymentType,
-      notes: formData.notes
-    }
-
-    const updatedPurchases = [...purchases, newPurchase]
-    savePurchases(updatedPurchases)
-
-    // Update stock
-    const updatedProducts = [...products]
-    formData.items.forEach(item => {
-      const product = updatedProducts.find(p => p.name.toLowerCase() === item.name.toLowerCase())
-      if (product) {
-        product.stock_quantity += item.quantity
-      }
-    })
-    setProducts(updatedProducts)
-    localStorage.setItem('khrismir_products', JSON.stringify(updatedProducts))
-
-    // Add to cash flow as expense
-    const newCashFlow: CashFlow = {
-      id: Date.now().toString(),
-      date: new Date().toISOString(),
-      type: 'saída',
-      description: `Compra: ${formData.supplier}`,
-      amount: total,
-      paymentType: formData.paymentType,
-      orderId: newPurchase.id
-    }
-    const updatedCashFlow = [...cashFlow, newCashFlow]
-    setCashFlow(updatedCashFlow)
-    localStorage.setItem('khrismir_cashflow', JSON.stringify(updatedCashFlow))
-
-    setShowForm(false)
-    setFormData({
-      type: 'fornecedor',
-      supplier: '',
-      paymentType: 'Dinheiro',
-      notes: '',
-      items: [{ name: '', quantity: 1, unitPrice: 0, total: 0 }]
-    })
-    toast.success('Compra registada com sucesso!')
-  }
-
-  const addItem = () => {
-    setFormData({
-      ...formData,
-      items: [...formData.items, { name: '', quantity: 1, unitPrice: 0, total: 0 }]
-    })
-  }
-
-  const removeItem = (index: number) => {
-    setFormData({
-      ...formData,
-      items: formData.items.filter((_, i) => i !== index)
-    })
-  }
-
-  const updateItem = (index: number, field: string, value: string | number) => {
-    const newItems = [...formData.items]
-    newItems[index] = { ...newItems[index], [field]: value }
-    setFormData({ ...formData, items: newItems })
-  }
-
-  const totalPurchase = formData.items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0)
 
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h2 className="text-2xl font-bold">Gestão de Compras</h2>
-        <button
-          onClick={() => setShowForm(true)}
-          className="bg-cyan-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"
-        >
-          <Plus className="w-4 h-4" /> Nova Compra
-        </button>
-      </div>
-
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <p className="text-gray-500 text-sm">Total de Compras</p>
-          <p className="text-3xl font-bold text-red-600">
-            {purchases.reduce((s, p) => s + p.total, 0).toLocaleString('pt-AO')} AOA
-          </p>
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-xl font-bold">Clientes Registados</h2>
+          <span className="text-sm text-gray-500">{filtered.length} clientes</span>
         </div>
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <p className="text-gray-500 text-sm">Compras de Fornecedores</p>
-          <p className="text-3xl font-bold text-cyan-600">
-            {purchases.filter(p => p.type === 'fornecedor').length}
-          </p>
+        <div className="relative mb-4">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar cliente..."
+            className="w-full pl-10 pr-4 py-2 border rounded-xl text-sm" />
         </div>
-        <div className="bg-white rounded-xl shadow-lg p-6">
-          <p className="text-gray-500 text-sm">Despesas Internas</p>
-          <p className="text-3xl font-bold text-orange-600">
-            {purchases.filter(p => p.type === 'interno').length}
-          </p>
-        </div>
-      </div>
-
-      {/* Purchases List */}
-      <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left text-sm font-semibold">Data</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold">Tipo</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold">Fornecedor/Descrição</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold">Itens</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold">Total</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold">Pagamento</th>
-            </tr>
-          </thead>
-          <tbody>
-            {purchases.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                  Nenhuma compra registada
-                </td>
-              </tr>
-            ) : (
-              purchases.slice().reverse().map(purchase => (
-                <tr key={purchase.id} className="border-t hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm">{new Date(purchase.date).toLocaleDateString('pt-AO')}</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      purchase.type === 'fornecedor' ? 'bg-green-100 text-green-800' : 'bg-orange-100 text-orange-800'
-                    }`}>
-                      {purchase.type === 'fornecedor' ? 'Fornecedor' : 'Interno'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm">{purchase.supplier}</td>
-                  <td className="px-4 py-3 text-sm">{purchase.items.length} item(s)</td>
-                  <td className="px-4 py-3 text-sm font-bold text-red-600">{purchase.total.toLocaleString('pt-AO')} AOA</td>
-                  <td className="px-4 py-3 text-sm">{purchase.paymentType}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Add Purchase Modal */}
-      {showForm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="text-xl font-bold">Nova Compra</h3>
-                <button onClick={() => setShowForm(false)} className="text-gray-500 hover:text-gray-700">
-                  <X className="w-6 h-6" />
-                </button>
+        <div className="space-y-3">
+          {filtered.map((c: any) => {
+            const ords = clientOrders(c.id)
+            const total = ords.reduce((s: number, o: any) => s + o.total, 0)
+            return (
+              <div key={c.id} className="border border-gray-100 rounded-2xl p-4 flex flex-wrap justify-between items-center gap-3">
+                <div>
+                  <p className="font-bold">{c.full_name}</p>
+                  <p className="text-sm text-gray-500">{c.email}</p>
+                  {c.phone && <p className="text-xs text-gray-400">{c.phone}</p>}
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-cyan-600">{ords.length} pedidos</p>
+                  <p className="text-xs text-gray-500">Total: {total.toLocaleString()} Kz</p>
+                  <p className="text-xs text-gray-400">{c.created_at ? new Date(c.created_at).toLocaleDateString('pt-AO') : '-'}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setSelectedClient(c)} className="text-xs bg-cyan-50 text-cyan-700 px-3 py-1.5 rounded-lg hover:bg-cyan-100 font-medium">Histórico</button>
+                  <button onClick={() => setNewPassModal(c)} className="text-xs bg-gray-100 text-gray-700 px-3 py-1.5 rounded-lg hover:bg-gray-200 font-medium">Resetar Senha</button>
+                </div>
               </div>
+            )
+          })}
+          {filtered.length === 0 && <p className="text-center text-gray-400 py-8">Nenhum cliente encontrado</p>}
+        </div>
+      </div>
 
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Tipo de Compra</label>
-                    <select
-                      value={formData.type}
-                      onChange={e => setFormData({ ...formData, type: e.target.value as PurchaseType })}
-                      className="w-full p-2 border rounded-lg"
-                    >
-                      <option value="fornecedor">Fornecedor</option>
-                      <option value="interno">Despesa Interna</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium mb-1">Forma de Pagamento</label>
-                    <select
-                      value={formData.paymentType}
-                      onChange={e => setFormData({ ...formData, paymentType: e.target.value })}
-                      className="w-full p-2 border rounded-lg"
-                    >
-                      <option>Dinheiro</option>
-                      <option>Multicaixa</option>
-                      <option>Transferência</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1">
-                    {formData.type === 'fornecedor' ? 'Fornecedor' : 'Descrição da Despesa'}
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.supplier}
-                    onChange={e => setFormData({ ...formData, supplier: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                    placeholder={formData.type === 'fornecedor' ? 'Nome do fornecedor' : 'Ex: Material de escritório'}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1">Notas</label>
-                  <textarea
-                    value={formData.notes}
-                    onChange={e => setFormData({ ...formData, notes: e.target.value })}
-                    className="w-full p-2 border rounded-lg"
-                    rows={2}
-                    placeholder="Observações adicionais..."
-                  />
-                </div>
-
-                <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <label className="block text-sm font-medium">Itens</label>
-                    <button onClick={addItem} className="text-cyan-600 text-sm flex items-center gap-1">
-                      <Plus className="w-4 h-4" /> Adicionar Item
-                    </button>
-                  </div>
-                  {formData.items.map((item, index) => (
-                    <div key={index} className="flex gap-2 mb-2 items-end">
-                      <div className="flex-1">
-                        <input
-                          type="text"
-                          value={item.name}
-                          onChange={e => updateItem(index, 'name', e.target.value)}
-                          className="w-full p-2 border rounded-lg text-sm"
-                          placeholder="Nome do produto"
-                          list="product-names"
-                        />
-                        <datalist id="product-names">
-                          {products.map(p => (
-                            <option key={p.id} value={p.name} />
-                          ))}
-                        </datalist>
-                      </div>
-                      <div className="w-20">
-                        <input
-                          type="number"
-                          value={item.quantity}
-                          onChange={e => updateItem(index, 'quantity', Number(e.target.value))}
-                          className="w-full p-2 border rounded-lg text-sm"
-                          placeholder="Qtd"
-                          min="1"
-                        />
-                      </div>
-                      <div className="w-28">
-                        <input
-                          type="number"
-                          value={item.unitPrice}
-                          onChange={e => updateItem(index, 'unitPrice', Number(e.target.value))}
-                          className="w-full p-2 border rounded-lg text-sm"
-                          placeholder="Preço"
-                          min="0"
-                        />
-                      </div>
-                      <button
-                        onClick={() => removeItem(index)}
-                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="bg-gray-50 p-4 rounded-lg flex justify-between items-center">
-                  <span className="font-medium">Total:</span>
-                  <span className="text-2xl font-bold text-red-600">{totalPurchase.toLocaleString('pt-AO')} AOA</span>
-                </div>
-
-                <button
-                  onClick={addPurchase}
-                  disabled={!formData.supplier || formData.items.length === 0}
-                  className="w-full bg-cyan-600 text-white py-3 rounded-lg font-medium hover:bg-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Registar Compra
-                </button>
+      {selectedClient && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h3 className="text-xl font-bold">{selectedClient.full_name}</h3>
+                <p className="text-sm text-gray-500">{selectedClient.email}</p>
               </div>
+              <button onClick={() => setSelectedClient(null)} className="text-gray-400 hover:text-gray-600 text-2xl">×</button>
             </div>
+            <h4 className="font-bold mb-3 text-gray-700">Histórico de Pedidos</h4>
+            {clientOrders(selectedClient.id).length === 0 ? (
+              <p className="text-gray-400 text-sm text-center py-8">Sem pedidos</p>
+            ) : (
+              <div className="space-y-2">
+                {clientOrders(selectedClient.id).map((o: any) => (
+                  <div key={o.id} className="bg-gray-50 rounded-xl p-3">
+                    <div className="flex justify-between">
+                      <span className="font-bold text-sm">{o.order_number}</span>
+                      <span className="font-bold text-cyan-600 text-sm">{o.total.toLocaleString()} Kz</span>
+                    </div>
+                    <p className="text-xs text-gray-500">{new Date(o.created_at).toLocaleDateString('pt-AO')} • {statusConfig[o.status as OrderStatus]?.label}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
+
+      {newPassModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
+            <h3 className="text-lg font-bold mb-4">Redefinir Senha — {newPassModal.full_name}</h3>
+            <input type="password" value={newPass} onChange={e => setNewPass(e.target.value)}
+              placeholder="Nova senha (mín. 6 caracteres)" className="w-full border p-3 rounded-xl mb-3" minLength={6} />
+            <button onClick={resetPass} className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition mb-2">Confirmar</button>
+            <button onClick={() => { setNewPassModal(null); setNewPass('') }} className="w-full text-gray-400 text-sm hover:text-gray-600">Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─── FINANCEIRO ─── */
+function CashFlowTab(_props: { cashFlow: CashFlow[]; setCashFlow: (c: CashFlow[]) => void }) {
+  const navigate = useNavigate()
+  const [summary, setSummary] = useState(() => getCashFlowSummary())
+  useEffect(() => { syncAllData(); setSummary(getCashFlowSummary()) }, [])
+  const fmt = (n: number) => n.toLocaleString('pt-AO') + ' AOA'
+
+  return (
+    <div className="space-y-6">
+      {/* KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-gradient-to-br from-cyan-500 to-cyan-600 text-white rounded-2xl p-5 shadow-md">
+          <p className="text-sm opacity-80 font-medium">Saldo Total</p>
+          <p className="text-2xl font-black mt-1">{fmt(summary.totalBalance)}</p>
+          <p className="text-xs opacity-60 mt-1">{summary.accounts.length} conta(s)</p>
+        </div>
+        <div className="bg-gradient-to-br from-green-500 to-green-600 text-white rounded-2xl p-5 shadow-md">
+          <p className="text-sm opacity-80 font-medium">Entradas Hoje</p>
+          <p className="text-2xl font-black mt-1">{fmt(summary.todayIncome)}</p>
+        </div>
+        <div className="bg-gradient-to-br from-red-500 to-red-600 text-white rounded-2xl p-5 shadow-md">
+          <p className="text-sm opacity-80 font-medium">Saídas Hoje</p>
+          <p className="text-2xl font-black mt-1">{fmt(summary.todayExpense)}</p>
+        </div>
+      </div>
+
+      {/* Contas */}
+      {summary.accounts.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-sm p-6">
+          <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2">
+            <Wallet className="w-5 h-5 text-cyan-600" /> Contas
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {summary.accounts.map((acc: any) => (
+              <div key={acc.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-xl">
+                <div>
+                  <p className="font-semibold text-sm">{acc.name}</p>
+                  <p className="text-xs text-gray-400 capitalize">{acc.type === 'cash' ? 'Caixa' : acc.type === 'bank' ? 'Banco' : 'Mobile'}</p>
+                </div>
+                <p className="font-bold text-sm" style={{ color: acc.color }}>{fmt(acc.balance)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Últimas vendas */}
+        <div className="bg-white rounded-2xl shadow-sm p-6">
+          <h3 className="font-bold text-gray-800 mb-4">Últimas Vendas (POS)</h3>
+          {summary.recentSales.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-6">Sem vendas registadas</p>
+          ) : (
+            <div className="space-y-2">
+              {summary.recentSales.map((m: any) => (
+                <div key={m.id} className="flex justify-between items-center p-3 bg-green-50 rounded-xl">
+                  <div>
+                    <p className="text-sm font-medium">{m.description}</p>
+                    <p className="text-xs text-gray-400">{m.date} · {m.account}</p>
+                  </div>
+                  <p className="text-sm font-bold text-green-600">+{m.amount.toLocaleString()} AOA</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Últimas despesas */}
+        <div className="bg-white rounded-2xl shadow-sm p-6">
+          <h3 className="font-bold text-gray-800 mb-4">Últimas Despesas</h3>
+          {summary.recentExpenses.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-6">Sem despesas registadas</p>
+          ) : (
+            <div className="space-y-2">
+              {summary.recentExpenses.map((m: any) => (
+                <div key={m.id} className="flex justify-between items-center p-3 bg-red-50 rounded-xl">
+                  <div>
+                    <p className="text-sm font-medium">{m.description}</p>
+                    <p className="text-xs text-gray-400">{m.date} · {m.account}</p>
+                  </div>
+                  <p className="text-sm font-bold text-red-600">-{m.amount.toLocaleString()} AOA</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Link para o Fluxo de Caixa completo */}
+      <div className="bg-gradient-to-r from-cyan-50 to-blue-50 border border-cyan-200 rounded-2xl p-6 flex items-center justify-between">
+        <div>
+          <p className="font-bold text-gray-800">Gestão Completa do Fluxo de Caixa</p>
+          <p className="text-sm text-gray-500 mt-1">Movimentos, contas, categorias, relatórios e gráficos</p>
+        </div>
+        <button onClick={() => navigate('/cashflow')}
+          className="flex items-center gap-2 bg-cyan-600 text-white px-5 py-2.5 rounded-xl font-medium hover:bg-cyan-700 transition text-sm">
+          <Wallet className="w-4 h-4" /> Abrir Caixa
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/* ─── COMPRAS / STOCK ─── */
+function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
+  const [form, setForm] = useState({ pid: '', qty: '', price: '', provider: '', account: '' })
+  const cfAccounts: any[] = (() => { try { return JSON.parse(localStorage.getItem('cf_accounts') || '[]') } catch { return [] } })()
+
+  const add = (e: React.FormEvent) => {
+    e.preventDefault()
+    const prod = products.find((p: any) => p.id === form.pid)
+    const total = Number(form.qty) * Number(form.price)
+    const newP = { id: Date.now().toString(), product_id: form.pid, quantity: Number(form.qty), unit_price: Number(form.price), total_price: total, supplier: form.provider, created_at: new Date().toISOString() }
+    const upP = [newP, ...purchases]; setPurchases(upP); localStorage.setItem('khrismir_purchases', JSON.stringify(upP))
+    const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + Number(form.qty) } : p)
+    setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
+
+    // Regista automaticamente no Fluxo de Caixa (ID determinístico evita duplicados no sync)
+    registerPurchaseMovement(total, prod?.name || 'Produto', form.provider, form.account || undefined, newP.id)
+
+    setForm({ pid: '', qty: '', price: '', provider: '', account: '' }); toast.success('Compra registada!')
+  }
+  const exportExcel = () => {
+    const rows = purchases.map((p: any) => ({ Data: new Date(p.created_at).toLocaleDateString('pt-AO'), Produto: products.find((x: any) => x.id === p.product_id)?.name || '', Quantidade: p.quantity, 'Preço Custo': p.unit_price, 'Total Custo': p.total_price, Fornecedor: p.supplier || '' }))
+    const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Compras')
+    XLSX.writeFile(wb, `khrismir-compras-${new Date().toLocaleDateString('pt-AO').replace(/\//g, '-')}.xlsx`)
+    toast.success('Excel exportado!')
+  }
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <form onSubmit={add} className="bg-white p-6 rounded-2xl shadow-sm space-y-4">
+        <h3 className="font-bold text-lg">Entrada de Stock</h3>
+        <select value={form.pid} onChange={e => setForm({ ...form, pid: e.target.value })} className="w-full border p-2 rounded-xl" required>
+          <option value="">Escolha o Produto</option>
+          {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <input type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} placeholder="Quantidade (kg)" className="w-full border p-2 rounded-xl" required min="0.1" step="0.1" />
+        <input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="Preço Custo (AOA/kg)" className="w-full border p-2 rounded-xl" required min="0" />
+        <input value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} placeholder="Fornecedor" className="w-full border p-2 rounded-xl" />
+        {cfAccounts.length > 0 && (
+          <select value={form.account} onChange={e => setForm({ ...form, account: e.target.value })} className="w-full border p-2 rounded-xl">
+            <option value="">Conta de Pagamento (automático)</option>
+            {cfAccounts.map((a: any) => <option key={a.id} value={a.name}>{a.name}</option>)}
+          </select>
+        )}
+        <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">Registar Compra</button>
+      </form>
+      <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="flex justify-between items-center p-4 border-b">
+          <h3 className="font-bold">Histórico de Compras</h3>
+          {purchases.length > 0 && <button onClick={exportExcel} className="flex items-center gap-2 bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition"><Download className="w-4 h-4" /> Excel</button>}
+        </div>
+        <table className="w-full text-left">
+          <thead className="bg-gray-50 text-xs font-bold text-gray-400 uppercase">
+            <tr><th className="p-4">Produto</th><th className="p-4">Qtd.</th><th className="p-4 text-right">Total Custo</th></tr>
+          </thead>
+          <tbody className="divide-y">
+            {purchases.map((p: any) => (
+              <tr key={p.id}>
+                <td className="p-4 font-medium">{products.find((x: any) => x.id === p.product_id)?.name}</td>
+                <td className="p-4 text-sm">{p.quantity} kg</td>
+                <td className="p-4 text-right text-red-600 font-bold">{Number(p.total_price).toLocaleString()} Kz</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/* ─── ZONAS DE ENTREGA ─── */
+function DeliveryTab() {
+  const load = (): DeliveryZone[] => { try { return JSON.parse(localStorage.getItem('khrismir_delivery_zones') || '[]') } catch { return [] } }
+  const [zones, setZones] = useState<DeliveryZone[]>(load)
+  const [form, setForm]   = useState({ name: '', price: '', description: '' })
+
+  const persist = (z: DeliveryZone[]) => { setZones(z); localStorage.setItem('khrismir_delivery_zones', JSON.stringify(z)); syncDeliveryZones(z) }
+
+  const add = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.name.trim() || !form.price) return
+    persist([...zones, { id: Date.now().toString(), name: form.name.trim(), price: Number(form.price), description: form.description }])
+    setForm({ name: '', price: '', description: '' }); toast.success('Zona adicionada!')
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <h2 className="text-xl font-bold mb-6">Nova Zona de Entrega</h2>
+        <form onSubmit={add} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Nome da Zona *</label>
+            <input type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              placeholder="Ex: Centralidade, Lubango Centro" required className="w-full border p-3 rounded-xl" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Taxa de Entrega (AOA) *</label>
+            <input type="number" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
+              placeholder="0" required min="0" className="w-full border p-3 rounded-xl" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Descrição (opcional)</label>
+            <input type="text" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Ex: Bairros próximos" className="w-full border p-3 rounded-xl" />
+          </div>
+          <button type="submit" className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition">
+            <Plus className="w-4 h-4 inline mr-2" />Adicionar Zona
+          </button>
+        </form>
+        <p className="text-xs text-gray-400 mt-4">💡 Se não houver zonas, a entrega é grátis. O cliente escolhe a zona no carrinho.</p>
+      </div>
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <h2 className="text-xl font-bold mb-6">Zonas Configuradas</h2>
+        {zones.length === 0 ? (
+          <div className="text-center py-12 text-gray-400">
+            <MapPin className="w-12 h-12 mx-auto mb-3 opacity-30" />
+            <p>Nenhuma zona de entrega configurada</p>
+            <p className="text-sm mt-1">Entrega gratuita para todos</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {zones.map(z => (
+              <div key={z.id} className="flex justify-between items-center p-4 border border-gray-100 rounded-2xl">
+                <div>
+                  <p className="font-bold">{z.name}</p>
+                  {z.description && <p className="text-xs text-gray-500">{z.description}</p>}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="font-bold text-cyan-600">{z.price === 0 ? 'Grátis' : `${z.price.toLocaleString()} Kz`}</span>
+                  <button onClick={() => persist(zones.filter(x => x.id !== z.id))} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ─── PROMOÇÕES ─── */
+function PromosTab() {
+  const load = (): PromoCode[] => { try { return JSON.parse(localStorage.getItem('khrismir_promos') || '[]') } catch { return [] } }
+  const [promos, setPromos] = useState<PromoCode[]>(load)
+  const [form, setForm]     = useState({ code: '', discount_type: 'percentage' as 'percentage' | 'fixed', discount_value: '', min_order: '', max_uses: '', expires_at: '' })
+
+  const persist = (p: PromoCode[]) => { setPromos(p); localStorage.setItem('khrismir_promos', JSON.stringify(p)); syncPromos(p) }
+
+  const add = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.code.trim() || !form.discount_value) return
+    if (promos.find(p => p.code.toUpperCase() === form.code.toUpperCase())) { toast.error('Código já existe'); return }
+    const newPromo: PromoCode = {
+      id: Date.now().toString(),
+      code: form.code.trim().toUpperCase(),
+      discount_type: form.discount_type,
+      discount_value: Number(form.discount_value),
+      min_order: Number(form.min_order) || 0,
+      uses: 0,
+      max_uses: form.max_uses ? Number(form.max_uses) : undefined,
+      expires_at: form.expires_at || undefined,
+      active: true,
+      created_at: new Date().toISOString(),
+    }
+    persist([...promos, newPromo])
+    setForm({ code: '', discount_type: 'percentage', discount_value: '', min_order: '', max_uses: '', expires_at: '' })
+    toast.success('Código criado!')
+  }
+
+  const toggle = (id: string) => persist(promos.map(p => p.id === id ? { ...p, active: !p.active } : p))
+  const del    = (id: string) => { if (confirm('Eliminar código?')) { persist(promos.filter(p => p.id !== id)); deletePromo(id) } }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <h2 className="text-xl font-bold mb-6">Novo Código Promocional</h2>
+        <form onSubmit={add} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1">Código *</label>
+            <input type="text" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value.toUpperCase() }))}
+              placeholder="Ex: VERAO25" required className="w-full border p-3 rounded-xl font-mono uppercase tracking-widest" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium mb-1">Tipo</label>
+              <select value={form.discount_type} onChange={e => setForm(f => ({ ...f, discount_type: e.target.value as any }))} className="w-full border p-3 rounded-xl">
+                <option value="percentage">Percentagem (%)</option>
+                <option value="fixed">Valor Fixo (Kz)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Desconto *</label>
+              <input type="number" value={form.discount_value} onChange={e => setForm(f => ({ ...f, discount_value: e.target.value }))}
+                placeholder={form.discount_type === 'percentage' ? '10' : '500'} required min="0" className="w-full border p-3 rounded-xl" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium mb-1">Pedido Mínimo (Kz)</label>
+              <input type="number" value={form.min_order} onChange={e => setForm(f => ({ ...f, min_order: e.target.value }))}
+                placeholder="0" min="0" className="w-full border p-3 rounded-xl" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Máx. Utilizações</label>
+              <input type="number" value={form.max_uses} onChange={e => setForm(f => ({ ...f, max_uses: e.target.value }))}
+                placeholder="Ilimitado" min="1" className="w-full border p-3 rounded-xl" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Expira em</label>
+            <input type="date" value={form.expires_at} onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}
+              className="w-full border p-3 rounded-xl" />
+          </div>
+          <button type="submit" className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition">
+            <Tag className="w-4 h-4 inline mr-2" />Criar Código
+          </button>
+        </form>
+      </div>
+
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <h2 className="text-xl font-bold mb-6">Códigos Activos</h2>
+        {promos.length === 0 ? (
+          <div className="text-center py-12 text-gray-400"><Tag className="w-12 h-12 mx-auto mb-3 opacity-30" /><p>Sem promoções criadas</p></div>
+        ) : (
+          <div className="space-y-3">
+            {promos.map(p => (
+              <div key={p.id} className={`p-4 border rounded-2xl ${p.active ? 'border-gray-100' : 'border-gray-200 opacity-60'}`}>
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-black font-mono text-lg tracking-widest text-cyan-700">{p.code}</p>
+                    <p className="text-sm text-gray-600 mt-0.5">
+                      {p.discount_type === 'percentage' ? `${p.discount_value}% desconto` : `${p.discount_value.toLocaleString()} Kz desconto`}
+                      {p.min_order > 0 && ` • Mín: ${p.min_order.toLocaleString()} Kz`}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Utilizações: {p.uses}{p.max_uses ? `/${p.max_uses}` : ''}
+                      {p.expires_at && ` • Expira: ${new Date(p.expires_at).toLocaleDateString('pt-AO')}`}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => toggle(p.id)}
+                      className={`text-xs px-2 py-1 rounded-lg font-bold ${p.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                      {p.active ? 'Activo' : 'Inactivo'}
+                    </button>
+                    <button onClick={() => del(p.id)} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ─── AGT / FISCAL ─── */
+function AGTTab({ orders, storeSettings, purchases }: { orders: Order[]; storeSettings: StoreSettings; purchases: Purchase[] }) {
+  const ivaRate = storeSettings.iva_rate / 100
+  const totalFaturado = orders.reduce((s, o) => s + o.total, 0)
+  const totalIVA = totalFaturado * ivaRate
+
+  const [saftYear, setSaftYear] = useState(new Date().getFullYear())
+
+  const exportSAFT = () => {
+    if (orders.length === 0) { toast.error('Sem facturas para exportar'); return }
+    const xml = generateSAFTXML(orders, storeSettings, saftYear)
+    downloadSAFT(xml, storeSettings.nif || 'SEMNNIF', saftYear)
+    toast.success(`SAF-T/AO ${saftYear} exportado em XML — schema AO_1.01_01`)
+  }
+
+  const exportExcel = () => {
+    const rows = orders.map(o => ({
+      'Nº Fatura':          o.order_number,
+      'Data':               o.created_at.slice(0, 10),
+      'Cliente':            o.customer_name || 'Consumidor Final',
+      'NIF Cliente':        o.customer_nif || '',
+      'Total Bruto':        o.total,
+      [`IVA (${storeSettings.iva_rate}%)`]: (o.total * ivaRate / (1 + ivaRate)).toFixed(2),
+      'Total Líquido':      (o.total / (1 + ivaRate)).toFixed(2),
+      'Estado':             statusConfig[o.status]?.label || o.status,
+      'Pagamento':          o.payment_type,
+      'Hash AGT':           o.hash || '—',
+    }))
+    const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Faturas')
+    XLSX.writeFile(wb, `khrismir-fiscal-${new Date().getFullYear()}.xlsx`)
+    toast.success('Relatório fiscal exportado!')
+  }
+
+  const [balanceMonth, setBalanceMonth] = useState(() => {
+    const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  })
+
+  const exportMonthlyBalance = () => {
+    const [y, m] = balanceMonth.split('-').map(Number)
+    const monthOrders = orders.filter(o => {
+      const d = new Date(o.created_at); return d.getFullYear() === y && d.getMonth() + 1 === m
+    })
+    const monthPurchases = purchases.filter(p => {
+      const d = new Date(p.date); return d.getFullYear() === y && d.getMonth() + 1 === m
+    })
+    const revenue = monthOrders.reduce((s, o) => s + o.total, 0)
+    const costs = monthPurchases.reduce((s, p) => s + p.total, 0)
+    const wb = XLSX.utils.book_new()
+    const resumo = [
+      { Item: 'Receitas (Vendas)', Valor: revenue },
+      { Item: 'Custos (Compras)', Valor: costs },
+      { Item: 'Lucro Bruto', Valor: revenue - costs },
+      { Item: `IVA (${storeSettings.iva_rate}%)`, Valor: revenue * ivaRate },
+      { Item: 'Lucro Líquido', Valor: (revenue - costs) - revenue * ivaRate },
+    ]
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), 'Resumo')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+      monthOrders.map(o => ({ 'Nº': o.order_number, 'Data': o.created_at.slice(0, 10), 'Cliente': o.customer_name || 'POS', 'Total': o.total, 'Pagamento': o.payment_type }))
+    ), 'Vendas')
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(
+      monthPurchases.map(p => ({ 'Data': p.date.slice(0, 10), 'Fornecedor': p.supplier, 'Total': p.total }))
+    ), 'Compras')
+    XLSX.writeFile(wb, `balanço-${balanceMonth}.xlsx`)
+    toast.success(`Balanço de ${balanceMonth} exportado!`)
+  }
+
+  return (
+    <div className="bg-white rounded-2xl p-8 shadow-sm border-t-4 border-orange-500">
+      <div className="flex justify-between items-start mb-8 flex-wrap gap-4">
+        <div>
+          <h2 className="text-2xl font-black text-gray-800">Conformidade AGT</h2>
+          <p className="text-gray-500 text-sm">IVA {storeSettings.iva_rate}% • NIF: {storeSettings.nif} • Decreto Presidencial n.º 71/25</p>
+        </div>
+        <div className="bg-orange-100 text-orange-700 px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wide">SAF-T/AO 1.01.01</div>
+      </div>
+
+      {(() => {
+        const comHash = orders.filter(o => o.hash).length
+        const semHash = orders.length - comHash
+        const pct = orders.length > 0 ? Math.round(comHash / orders.length * 100) : 0
+        return semHash > 0 ? (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-amber-800">Facturas sem hash: {semHash}</p>
+              <p className="text-sm text-amber-700">{comHash} de {orders.length} facturas têm hash AGT ({pct}%). As mais antigas foram criadas antes da actualização. O SAF-T calculará o hash em falta na exportação.</p>
+            </div>
+          </div>
+        ) : orders.length > 0 ? (
+          <div className="bg-green-50 border border-green-200 rounded-2xl p-4 mb-6 flex items-center gap-3">
+            <FileText className="w-5 h-5 text-green-600" />
+            <p className="text-sm font-medium text-green-800">Todas as {orders.length} facturas têm hash de autenticação AGT ✓</p>
+          </div>
+        ) : null
+      })()}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
+          <p className="text-gray-400 text-xs uppercase font-bold tracking-widest mb-1">Total Faturado</p>
+          <p className="text-xl font-black text-gray-800">{totalFaturado.toLocaleString()} Kz</p>
+        </div>
+        <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
+          <p className="text-gray-400 text-xs uppercase font-bold tracking-widest mb-1">IVA ({storeSettings.iva_rate}%)</p>
+          <p className="text-xl font-black text-gray-800">{(totalFaturado * ivaRate / (1 + ivaRate)).toLocaleString(undefined, { maximumFractionDigits: 0 })} Kz</p>
+        </div>
+        <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
+          <p className="text-gray-400 text-xs uppercase font-bold tracking-widest mb-1">Nº Facturas</p>
+          <p className="text-xl font-black text-gray-800">{orders.length}</p>
+        </div>
+        <div className="bg-gray-50 p-5 rounded-2xl border border-gray-100">
+          <p className="text-gray-400 text-xs uppercase font-bold tracking-widest mb-1">Com Hash AGT</p>
+          <p className="text-xl font-black text-gray-800">{orders.filter(o => o.hash).length}</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="p-5 border-2 border-dashed border-gray-200 rounded-2xl hover:border-orange-400 hover:bg-orange-50 transition group">
+          <div className="flex items-center gap-3 mb-3">
+            <Upload className="text-gray-300 group-hover:text-orange-500 w-6 h-6 shrink-0" />
+            <div>
+              <p className="font-bold group-hover:text-orange-700">Exportar SAF-T/AO</p>
+              <p className="text-xs text-gray-400">Schema AO_1.01_01 • XML • Hash encadeado</p>
+            </div>
+          </div>
+          <div className="flex gap-2 items-center">
+            <select value={saftYear} onChange={e => setSaftYear(Number(e.target.value))} className="border p-2 rounded-lg text-sm flex-1">
+              {[2023,2024,2025,2026].map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <button onClick={exportSAFT} className="bg-orange-500 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-orange-600 transition">Exportar</button>
+          </div>
+        </div>
+        <button onClick={exportExcel}
+          className="flex items-center gap-3 p-5 border-2 border-dashed border-gray-200 rounded-2xl hover:border-green-400 hover:bg-green-50 transition group">
+          <Download className="text-gray-300 group-hover:text-green-500 w-6 h-6" />
+          <div className="text-left">
+            <p className="font-bold group-hover:text-green-700">Exportar Excel Fiscal</p>
+            <p className="text-xs text-gray-400">Relatório detalhado de todas as faturas</p>
+          </div>
+        </button>
+      </div>
+
+      <div className="mt-8 pt-8 border-t border-gray-100">
+        <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2"><CalendarDays className="w-5 h-5 text-purple-600" /> Balanço Mensal Automático</h3>
+        <div className="flex gap-3 items-end flex-wrap">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Selecione o mês</label>
+            <input type="month" value={balanceMonth} onChange={e => setBalanceMonth(e.target.value)} className="border p-2.5 rounded-xl" />
+          </div>
+          <button onClick={exportMonthlyBalance}
+            className="flex items-center gap-2 bg-purple-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-purple-700 transition">
+            <Download className="w-4 h-4" /> Exportar Balanço
+          </button>
+        </div>
+        <p className="text-xs text-gray-400 mt-2">Exporta Excel com Vendas, Compras, Lucro Bruto e Lucro Líquido</p>
+      </div>
+    </div>
+  )
+}
+
+/* ─── CONFIGURAÇÕES ─── */
+function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s: StoreSettings) => void }) {
+  const [form, setForm] = useState<StoreSettings>({ ...settings })
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    onSave(form)
+    toast.success('Configurações guardadas!')
+  }
+
+  return (
+    <div className="bg-white rounded-2xl p-6 shadow-sm max-w-2xl">
+      <h2 className="text-xl font-bold mb-6 flex items-center gap-2"><Settings className="w-5 h-5 text-cyan-600" /> Configurações da Loja</h2>
+      <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {[
+            { field: 'name',     label: 'Nome da Loja',     type: 'text',   placeholder: 'Peixaria Khrismir'   },
+            { field: 'phone',    label: 'Telefone',          type: 'tel',    placeholder: '+244 929 970 984'    },
+            { field: 'whatsapp', label: 'WhatsApp (sem +)',  type: 'text',   placeholder: '244929970984'        },
+            { field: 'email',    label: 'Email',             type: 'email',  placeholder: 'loja@email.com'      },
+            { field: 'nif',      label: 'NIF',               type: 'text',   placeholder: '5001210092'          },
+            { field: 'iva_rate', label: 'Taxa IVA (%)',       type: 'number', placeholder: '14'                  },
+          ].map(({ field, label, type, placeholder }) => (
+            <div key={field}>
+              <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+              <input type={type} value={(form as any)[field]} placeholder={placeholder}
+                onChange={e => setForm(f => ({ ...f, [field]: type === 'number' ? Number(e.target.value) : e.target.value }))}
+                className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" required />
+            </div>
+          ))}
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Endereço Completo</label>
+          <input type="text" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
+            placeholder="Rua, Bairro, Cidade, Província" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Horário de Funcionamento</label>
+          <input type="text" value={form.opening_hours} onChange={e => setForm(f => ({ ...f, opening_hours: e.target.value }))}
+            placeholder="Seg–Sáb: 07:00–18:00" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="flex items-center gap-3 p-4 border rounded-xl">
+            <input type="checkbox" id="delivery_enabled" checked={form.delivery_enabled}
+              onChange={e => setForm(f => ({ ...f, delivery_enabled: e.target.checked }))} className="w-4 h-4" />
+            <label htmlFor="delivery_enabled" className="text-sm font-medium cursor-pointer">Entrega a domicílio activa</label>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Pedido Mínimo Delivery (Kz)</label>
+            <input type="number" value={form.min_order_delivery} onChange={e => setForm(f => ({ ...f, min_order_delivery: Number(e.target.value) }))}
+              min="0" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
+          </div>
+        </div>
+        <button type="submit" className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 text-white py-3 rounded-xl font-bold hover:from-cyan-700 hover:to-blue-700 transition">
+          Guardar Configurações
+        </button>
+      </form>
+    </div>
+  )
+}
+
+/* ─── SISTEMA ─── */
+function SystemTab({ products, categories }: { products: Product[]; categories: Category[] }) {
+  const [syncing, setSyncing] = useState(false)
+
+  const syncAll = async () => {
+    setSyncing(true)
+    const tid = toast.loading('A sincronizar todos os dados com a cloud…')
+    const result = await pushAll()
+    toast.dismiss(tid)
+    setSyncing(false)
+    if (result.ok) {
+      toast.success(`Sincronização concluída! ${result.details.filter(d => d.startsWith('✅')).length} tabelas actualizadas.`)
+    } else {
+      const erros = result.details.filter(d => d.startsWith('❌'))
+      const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
+      toast.error(`Sincronização falhou: ${msg}`, { duration: 10000 })
+      result.details.forEach(d => console.warn('[sync]', d))
+    }
+  }
+
+  const runMigration = () => {
+    // Força re-migração removendo a flag
+    localStorage.removeItem('cf_migration_done_v1')
+    const { imported, skipped } = migrateExistingData(true)
+    if (imported > 0) {
+      toast.success(`Migração concluída: ${imported} registos importados para o Fluxo de Caixa`)
+    } else {
+      toast.info(`Nenhum registo novo encontrado (${skipped} já existiam)`)
+    }
+  }
+
+  const downloadBackup = () => {
+    const ls = (k: string, fb: any) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? fb } catch { return fb } }
+    const data = {
+      exportedAt:   new Date().toISOString(),
+      products:     ls('khrismir_products',       []),
+      categories:   ls('khrismir_categories',     []),
+      orders:       ls('khrismir_orders',          []),
+      cashflow:     ls('khrismir_cashflow',        []),
+      purchases:    ls('khrismir_purchases',       []),
+      employees:    ls('khrismir_employees',       []),
+      settings:     ls('khrismir_settings',        {}),
+      promos:       ls('khrismir_promos',          []),
+      delivery:     ls('khrismir_delivery_zones',  []),
+      cf_movements: ls('cf_movements',             []),
+      cf_accounts:  ls('cf_accounts',              []),
+    }
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url
+    a.download = `khrismir-backup-${new Date().toLocaleDateString('pt-AO').replace(/\//g, '-')}.json`; a.click(); URL.revokeObjectURL(url)
+    toast.success('Backup descarregado!')
+  }
+
+  const importBackup = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = async ev => {
+      try {
+        const data = JSON.parse(ev.target?.result as string)
+        // Guardar tudo no localStorage
+        const map: Record<string, string> = {
+          products:     'khrismir_products',
+          categories:   'khrismir_categories',
+          orders:       'khrismir_orders',
+          cashflow:     'khrismir_cashflow',
+          purchases:    'khrismir_purchases',
+          employees:    'khrismir_employees',
+          settings:     'khrismir_settings',
+          promos:       'khrismir_promos',
+          delivery:     'khrismir_delivery_zones',
+          cf_movements: 'cf_movements',
+          cf_accounts:  'cf_accounts',
+        }
+        Object.entries(map).forEach(([k, v]) => { if (data[k] !== undefined) localStorage.setItem(v, JSON.stringify(data[k])) })
+
+        // Sincronizar com Supabase para que web/Vercel veja os mesmos dados
+        const tid = toast.loading('A sincronizar com a cloud…')
+        const result = await pushAll()
+        toast.dismiss(tid)
+        if (result.ok) {
+          toast.success(`Backup importado e sincronizado! ${result.details.filter(d => d.startsWith('✅')).length} tabelas actualizadas.`)
+        } else {
+          toast.success('Backup importado localmente.')
+          toast.info('Sincronização parcial — verifique a ligação à internet.')
+        }
+        setTimeout(() => window.location.reload(), 2000)
+      } catch { toast.error('Ficheiro inválido') }
+    }
+    reader.readAsText(file); e.target.value = ''
+  }
+
+  return (
+    <div className="bg-white rounded-2xl p-6 shadow-sm border-t-4 border-gray-800 max-w-2xl">
+      <h2 className="text-xl font-bold mb-6">Configurações de Sistema</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div className="p-4 border rounded-2xl space-y-4">
+          <div>
+            <h4 className="font-bold mb-1">Base de Dados Local</h4>
+            <p className="text-sm text-gray-500">{products.length} produtos • {categories.length} categorias</p>
+          </div>
+          <div className="flex gap-3 flex-wrap">
+            <button onClick={downloadBackup} className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-blue-700 transition">
+              <Download className="w-4 h-4" /> Baixar Backup
+            </button>
+            <label className="flex items-center gap-2 bg-gray-100 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold cursor-pointer hover:bg-gray-200 transition">
+              <Upload className="w-4 h-4" /> Importar Backup
+              <input type="file" accept=".json" onChange={importBackup} className="hidden" />
+            </label>
+          </div>
+        </div>
+        <div className="p-4 border border-cyan-100 rounded-2xl bg-cyan-50/30">
+          <h4 className="font-bold text-cyan-800 mb-2">Fluxo de Caixa</h4>
+          <p className="text-sm text-cyan-700 mb-3">Importar compras e movimentos históricos para o Fluxo de Caixa.</p>
+          <button onClick={runMigration}
+            className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">
+            <Upload className="w-4 h-4" /> Importar Dados Históricos
+          </button>
+        </div>
+        <div className="p-4 border border-red-100 rounded-2xl bg-red-50/30">
+          <h4 className="font-bold text-red-800 mb-2">Zona de Perigo</h4>
+          <p className="text-sm text-red-600/70 mb-4">Limpar todos os dados do navegador e reiniciar.</p>
+          <button onClick={() => { if (!confirm('Apagar TODOS os dados? Esta acção não pode ser desfeita!')) return; localStorage.clear(); window.location.reload() }}
+            className="text-red-600 border border-red-200 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-600 hover:text-white transition">
+            Reset Total
+          </button>
+        </div>
+      </div>
+      <div className="bg-gradient-to-r from-cyan-500 to-blue-600 rounded-2xl p-5 text-white">
+        <p className="font-bold text-lg mb-1">☁️ Sincronizar com Cloud (Supabase)</p>
+        <p className="text-cyan-100 text-sm mb-4">Envia todos os dados locais (produtos, categorias, encomendas, zonas, promoções, configurações) para o Supabase. Qualquer aparelho verá os dados actualizados.</p>
+        <div className="flex gap-3 flex-wrap">
+          <button onClick={syncAll} disabled={syncing}
+            className="bg-white text-cyan-700 font-bold px-6 py-2 rounded-xl hover:bg-cyan-50 transition disabled:opacity-60 flex items-center gap-2">
+            <RotateCcw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'A sincronizar…' : 'Sincronizar Agora'}
+          </button>
+          <button onClick={() => { localStorage.removeItem('khrismir_auto_synced'); syncAll() }} disabled={syncing}
+            className="bg-cyan-700 text-white font-bold px-4 py-2 rounded-xl hover:bg-cyan-800 transition disabled:opacity-60 text-sm">
+            Forçar Re-sincronização
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ─── FORNECEDORES ─── */
+function SuppliersTab() {
+  const load = (): Supplier[] => { try { return JSON.parse(localStorage.getItem('khrismir_suppliers') || '[]') } catch { return [] } }
+  const [suppliers, setSuppliers] = useState<Supplier[]>(load)
+  const [form, setForm] = useState({ name: '', nif: '', phone: '', email: '', address: '', notes: '' })
+  const [editing, setEditing] = useState<Supplier | null>(null)
+
+  const persist = (s: Supplier[]) => { setSuppliers(s); localStorage.setItem('khrismir_suppliers', JSON.stringify(s)) }
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (editing) {
+      persist(suppliers.map(s => s.id === editing.id ? { ...editing, ...form } : s))
+      setEditing(null)
+      toast.success('Fornecedor actualizado!')
+    } else {
+      persist([...suppliers, { id: Date.now().toString(), ...form, created_at: new Date().toISOString() }])
+      toast.success('Fornecedor criado!')
+    }
+    setForm({ name: '', nif: '', phone: '', email: '', address: '', notes: '' })
+  }
+
+  const del = (id: string) => { if (!confirm('Eliminar fornecedor?')) return; persist(suppliers.filter(s => s.id !== id)); toast.success('Eliminado') }
+  const doEdit = (s: Supplier) => { setEditing(s); setForm({ name: s.name, nif: s.nif || '', phone: s.phone || '', email: s.email || '', address: s.address || '', notes: s.notes || '' }) }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <form onSubmit={save} className="bg-white p-6 rounded-2xl shadow-sm space-y-4">
+        <h3 className="font-bold text-lg flex items-center gap-2"><Truck className="w-5 h-5 text-cyan-600" />{editing ? 'Editar' : 'Novo'} Fornecedor</h3>
+        <input required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Nome *" className="w-full border p-3 rounded-xl" />
+        <div className="grid grid-cols-2 gap-3">
+          <input value={form.nif} onChange={e => setForm(f => ({ ...f, nif: e.target.value }))} placeholder="NIF" className="border p-3 rounded-xl" />
+          <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} placeholder="Telefone" className="border p-3 rounded-xl" />
+        </div>
+        <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} placeholder="Email" className="w-full border p-3 rounded-xl" />
+        <input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} placeholder="Endereço" className="w-full border p-3 rounded-xl" />
+        <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} placeholder="Notas" rows={2} className="w-full border p-3 rounded-xl resize-none" />
+        <button type="submit" className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition">
+          {editing ? 'Guardar Alterações' : 'Adicionar Fornecedor'}
+        </button>
+        {editing && <button type="button" onClick={() => { setEditing(null); setForm({ name: '', nif: '', phone: '', email: '', address: '', notes: '' }) }} className="w-full text-gray-400 text-sm hover:text-gray-600">Cancelar</button>}
+      </form>
+      <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm p-6">
+        <h3 className="font-bold mb-4">{suppliers.length} Fornecedor(es)</h3>
+        {suppliers.length === 0 ? (
+          <div className="text-center py-16 text-gray-400"><Truck className="w-12 h-12 mx-auto mb-3 opacity-30" /><p>Sem fornecedores registados</p></div>
+        ) : (
+          <div className="space-y-3">
+            {suppliers.map(s => (
+              <div key={s.id} className="border border-gray-100 rounded-2xl p-4">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-bold text-gray-800">{s.name}</p>
+                    {s.nif && <p className="text-xs text-gray-500">NIF: {s.nif}</p>}
+                    <div className="flex flex-wrap gap-3 mt-1">
+                      {s.phone && <p className="text-xs text-gray-500">📞 {s.phone}</p>}
+                      {s.email && <p className="text-xs text-gray-500">✉️ {s.email}</p>}
+                      {s.address && <p className="text-xs text-gray-500">📍 {s.address}</p>}
+                    </div>
+                    {s.notes && <p className="text-xs text-gray-400 mt-1 italic">{s.notes}</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => doEdit(s)} className="text-gray-400 hover:text-cyan-600 p-1 transition"><Edit className="w-4 h-4" /></button>
+                    <button onClick={() => del(s.id)} className="text-gray-400 hover:text-red-600 p-1 transition"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ─── DEVOLUÇÕES ─── */
+function ReturnsTab({ orders, products, setProducts, setOrders }: {
+  orders: Order[]; products: Product[]; setProducts: (p: Product[]) => void; setOrders: (o: Order[]) => void
+}) {
+  const load = (): Return[] => { try { return JSON.parse(localStorage.getItem('khrismir_returns') || '[]') } catch { return [] } }
+  const [returns, setReturns] = useState<Return[]>(load)
+  const [modal, setModal] = useState<Order | null>(null)
+  const [reason, setReason] = useState('')
+
+  const deliveredOrders = orders.filter(o => o.status === 'entregue')
+  const returnedIds = new Set(returns.map(r => r.order_id))
+
+  const persist = (r: Return[]) => { setReturns(r); localStorage.setItem('khrismir_returns', JSON.stringify(r)) }
+
+  const processReturn = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!modal || !reason) return
+    if (returnedIds.has(modal.id)) { toast.error('Esta encomenda já foi devolvida'); return }
+    const ret: Return = {
+      id: Date.now().toString(),
+      order_id: modal.id,
+      order_number: modal.order_number,
+      customer_name: modal.customer_name,
+      items: modal.items.map(i => ({ product_name: i.product_name, quantity: i.quantity, amount: i.total_price })),
+      total: modal.total,
+      reason,
+      created_at: new Date().toISOString(),
+    }
+    persist([ret, ...returns])
+    const updatedProducts = products.map(p => {
+      const item = modal.items.find(i => i.product_id === p.id)
+      return item ? { ...p, stock_quantity: p.stock_quantity + item.quantity } : p
+    })
+    setProducts(updatedProducts)
+    localStorage.setItem('khrismir_products', JSON.stringify(updatedProducts))
+    const cfMovements = JSON.parse(localStorage.getItem('cf_movements') || '[]')
+    cfMovements.unshift({ id: Date.now().toString(), date: new Date().toISOString().slice(0, 10), type: 'expense', description: `Devolução ${modal.order_number}${modal.customer_name ? ' — ' + modal.customer_name : ''}`, amount: modal.total, category: 'Devoluções', account: '', reference: modal.order_number, created_at: new Date().toISOString() })
+    localStorage.setItem('cf_movements', JSON.stringify(cfMovements))
+    setOrders(orders.map(o => o.id === modal.id ? { ...o, status: 'cancelado' as any } : o))
+    toast.success(`Devolução de ${modal.order_number} processada!`)
+    setModal(null)
+    setReason('')
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl shadow-sm p-6">
+          <h3 className="font-bold mb-4 flex items-center gap-2"><RotateCcw className="w-5 h-5 text-orange-500" /> Encomendas Entregues</h3>
+          {deliveredOrders.length === 0 ? <p className="text-center text-gray-400 py-8">Sem encomendas entregues</p> : (
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {deliveredOrders.map(o => {
+                const alreadyReturned = returnedIds.has(o.id)
+                return (
+                  <div key={o.id} className={`border rounded-xl p-3 ${alreadyReturned ? 'opacity-50 bg-gray-50' : 'border-gray-100'}`}>
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-bold text-sm">{o.order_number}</p>
+                        <p className="text-xs text-gray-500">{o.customer_name || 'POS'} • {new Date(o.created_at).toLocaleDateString('pt-AO')}</p>
+                        <p className="text-xs font-bold text-cyan-600">{o.total.toLocaleString()} AOA</p>
+                      </div>
+                      {alreadyReturned ? <span className="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded-full">Devolvida</span> : (
+                        <button onClick={() => { setModal(o); setReason('') }} className="text-xs bg-orange-600 text-white px-3 py-1.5 rounded-lg hover:bg-orange-700 font-medium">Devolver</button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        <div className="bg-white rounded-2xl shadow-sm p-6">
+          <h3 className="font-bold mb-4">Histórico de Devoluções</h3>
+          {returns.length === 0 ? <p className="text-center text-gray-400 py-8">Sem devoluções registadas</p> : (
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {returns.map(r => (
+                <div key={r.id} className="border border-orange-100 bg-orange-50 rounded-xl p-3">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="font-bold text-sm text-orange-800">{r.order_number}</p>
+                      <p className="text-xs text-orange-600">{r.customer_name || 'POS'}</p>
+                      <p className="text-xs text-gray-500 mt-1">Motivo: {r.reason}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-red-600">-{r.total.toLocaleString()} AOA</p>
+                      <p className="text-xs text-gray-400">{new Date(r.created_at).toLocaleDateString('pt-AO')}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {modal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl">
+            <h3 className="text-lg font-bold mb-2">Processar Devolução</h3>
+            <p className="text-sm text-gray-500 mb-4">{modal.order_number} — {modal.total.toLocaleString()} AOA</p>
+            <form onSubmit={processReturn} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Motivo da Devolução *</label>
+                <textarea value={reason} onChange={e => setReason(e.target.value)} required rows={3} placeholder="Ex: Produto em mau estado..." className="w-full border p-3 rounded-xl resize-none" />
+              </div>
+              <div className="bg-amber-50 p-3 rounded-xl text-xs text-amber-700">Irá: restituir stock, registar movimento negativo no caixa e cancelar a encomenda.</div>
+              <button type="submit" className="w-full bg-orange-600 text-white py-3 rounded-xl font-bold hover:bg-orange-700 transition">Confirmar Devolução</button>
+              <button type="button" onClick={() => setModal(null)} className="w-full text-gray-400 text-sm hover:text-gray-600">Cancelar</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─── FIDELIZAÇÃO ─── */
+function LoyaltyTab({ orders }: { orders: Order[] }) {
+  const POINTS_VALUE = 1
+  const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]').filter((c: any) => c.role === 'client')
+  const [transactions, setTransactions] = useState<LoyaltyTransaction[]>(() => { try { return JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]') } catch { return [] } })
+  const [redeemModal, setRedeemModal] = useState<any>(null)
+  const [redeemPoints, setRedeemPoints] = useState('')
+
+  const getClientPoints = (clientId: string) =>
+    transactions.filter(t => t.client_id === clientId).reduce((sum, t) => t.type === 'earned' ? sum + t.points : sum - t.points, 0)
+
+  const clientsWithPoints = clients.map(c => {
+    const clientOrders = orders.filter(o => o.customer_id === c.id && o.status === 'entregue')
+    const totalSpent = clientOrders.reduce((s: number, o: any) => s + o.total, 0)
+    return { ...c, totalSpent, currentPoints: getClientPoints(c.id), orderCount: clientOrders.length }
+  }).filter(c => c.orderCount > 0).sort((a, b) => b.currentPoints - a.currentPoints)
+
+  const handleRedeem = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!redeemModal) return
+    const pts = Number(redeemPoints)
+    if (pts <= 0 || pts > redeemModal.currentPoints) { toast.error('Pontos inválidos'); return }
+    const trans: LoyaltyTransaction = { id: Date.now().toString(), client_id: redeemModal.id, client_name: redeemModal.full_name, points: pts, type: 'redeemed', created_at: new Date().toISOString() }
+    const updated = [...transactions, trans]
+    setTransactions(updated)
+    localStorage.setItem('khrismir_loyalty', JSON.stringify(updated))
+    toast.success(`${pts} pontos resgatados = ${(pts * POINTS_VALUE).toLocaleString()} AOA desconto`)
+    setRedeemModal(null)
+    setRedeemPoints('')
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-gradient-to-br from-yellow-400 to-amber-500 text-white p-5 rounded-2xl shadow-lg">
+          <p className="opacity-80 text-xs font-medium uppercase">Clientes no Programa</p>
+          <h3 className="text-2xl font-black mt-1">{clientsWithPoints.length}</h3>
+        </div>
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+          <p className="text-gray-400 text-xs font-medium uppercase">Regra de Pontos</p>
+          <h3 className="text-sm font-bold mt-1 text-gray-800">1 ponto por cada 1.000 AOA gastos</h3>
+        </div>
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
+          <p className="text-gray-400 text-xs font-medium uppercase">Valor do Ponto</p>
+          <h3 className="text-sm font-bold mt-1 text-gray-800">1 ponto = 1 AOA desconto</h3>
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl shadow-sm p-6">
+        <h3 className="font-bold mb-4 flex items-center gap-2"><Star className="w-5 h-5 text-yellow-500" /> Clientes — Saldo de Pontos</h3>
+        {clientsWithPoints.length === 0 ? <p className="text-center text-gray-400 py-8">Nenhum cliente com pedidos entregues</p> : (
+          <div className="space-y-3">
+            {clientsWithPoints.map(c => (
+              <div key={c.id} className="border border-gray-100 rounded-2xl p-4 flex justify-between items-center flex-wrap gap-3">
+                <div>
+                  <p className="font-bold text-gray-800">{c.full_name}</p>
+                  <p className="text-xs text-gray-500">{c.email} • {c.orderCount} pedidos • {c.totalSpent.toLocaleString()} AOA</p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="text-center">
+                    <p className="text-2xl font-black text-yellow-500">{c.currentPoints}</p>
+                    <p className="text-xs text-gray-400">pontos</p>
+                  </div>
+                  <button onClick={() => { setRedeemModal(c); setRedeemPoints('') }} disabled={c.currentPoints <= 0}
+                    className="bg-yellow-400 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-yellow-500 disabled:opacity-40 disabled:cursor-not-allowed">
+                    Resgatar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {redeemModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl">
+            <h3 className="text-lg font-bold mb-1">Resgatar Pontos</h3>
+            <p className="text-sm text-gray-500 mb-4">{redeemModal.full_name} — {redeemModal.currentPoints} pontos disponíveis</p>
+            <form onSubmit={handleRedeem} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Pontos a resgatar</label>
+                <input type="number" value={redeemPoints} onChange={e => setRedeemPoints(e.target.value)} min="1" max={redeemModal.currentPoints} required className="w-full border p-3 rounded-xl" />
+                {redeemPoints && <p className="text-xs text-green-600 mt-1">= {(Number(redeemPoints) * POINTS_VALUE).toLocaleString()} AOA desconto</p>}
+              </div>
+              <button type="submit" className="w-full bg-yellow-400 text-white py-3 rounded-xl font-bold hover:bg-yellow-500 transition">Confirmar Resgate</button>
+              <button type="button" onClick={() => setRedeemModal(null)} className="w-full text-gray-400 text-sm hover:text-gray-600">Cancelar</button>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─── CALENDÁRIO DE ENTREGAS ─── */
+function CalendarTab({ orders }: { orders: Order[] }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const [selectedDate, setSelectedDate] = useState(today)
+
+  const deliveryOrders = orders.filter(o => o.delivery_type === 'delivery' && o.status !== 'cancelado')
+  const ordersOnDate = deliveryOrders.filter(o => o.created_at.slice(0, 10) === selectedDate)
+
+  const daysWithOrders: Record<string, number> = {}
+  deliveryOrders.forEach(o => {
+    const d = o.created_at.slice(0, 10)
+    daysWithOrders[d] = (daysWithOrders[d] || 0) + 1
+  })
+
+  const [year, month] = selectedDate.split('-').map(Number)
+  const firstDay = new Date(year, month - 1, 1).getDay()
+  const daysInMonth = new Date(year, month, 0).getDate()
+  const calDays = Array.from({ length: firstDay }, () => null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1))
+
+  const prevMonth = () => { const d = new Date(year, month - 2, 1); setSelectedDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`) }
+  const nextMonth = () => { const d = new Date(year, month, 1); setSelectedDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`) }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="bg-white rounded-2xl shadow-sm p-6">
+        <div className="flex justify-between items-center mb-4">
+          <button onClick={prevMonth} className="text-gray-400 hover:text-gray-700 px-3 py-1 rounded hover:bg-gray-100">&lt;</button>
+          <h3 className="font-bold text-gray-800">{new Date(year, month - 1).toLocaleDateString('pt-AO', { month: 'long', year: 'numeric' })}</h3>
+          <button onClick={nextMonth} className="text-gray-400 hover:text-gray-700 px-3 py-1 rounded hover:bg-gray-100">&gt;</button>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-center">
+          {['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'].map(d => <div key={d} className="text-xs text-gray-400 font-medium py-1">{d}</div>)}
+          {calDays.map((day, i) => {
+            if (!day) return <div key={i} />
+            const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+            const count = daysWithOrders[dateStr] || 0
+            const isSelected = dateStr === selectedDate
+            const isToday = dateStr === today
+            return (
+              <button key={i} onClick={() => setSelectedDate(dateStr)}
+                className={`relative py-2 rounded-lg text-sm font-medium transition ${isSelected ? 'bg-cyan-600 text-white' : isToday ? 'border-2 border-cyan-300 text-cyan-700' : 'hover:bg-gray-100 text-gray-700'}`}>
+                {day}
+                {count > 0 && <span className={`absolute -top-1 -right-1 w-4 h-4 rounded-full text-xs flex items-center justify-center font-bold ${isSelected ? 'bg-white text-cyan-700' : 'bg-cyan-600 text-white'}`}>{count}</span>}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl shadow-sm p-6">
+        <h3 className="font-bold mb-4 flex items-center gap-2">
+          <CalendarDays className="w-5 h-5 text-cyan-600" />
+          Entregas em {new Date(selectedDate + 'T12:00:00').toLocaleDateString('pt-AO', { day: 'numeric', month: 'long' })}
+        </h3>
+        {ordersOnDate.length === 0 ? <p className="text-center text-gray-400 py-8">Sem entregas neste dia</p> : (
+          <div className="space-y-3">
+            {ordersOnDate.map(o => (
+              <div key={o.id} className="border border-gray-100 rounded-xl p-4">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-bold text-sm">{o.order_number}</p>
+                    <p className="text-xs text-gray-600">{o.customer_name || 'Cliente'}</p>
+                    {o.delivery_address && <p className="text-xs text-gray-400">📍 {o.delivery_address}</p>}
+                    {o.customer_phone && <p className="text-xs text-gray-400">📞 {o.customer_phone}</p>}
+                    {o.delivery_zone && <p className="text-xs text-gray-400">Zona: {o.delivery_zone}</p>}
+                  </div>
+                  <div className="text-right">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${statusConfig[o.status as OrderStatus]?.color || 'bg-gray-100 text-gray-600'}`}>
+                      {statusConfig[o.status as OrderStatus]?.label || o.status}
+                    </span>
+                    <p className="text-xs font-bold text-cyan-600 mt-1">{o.total.toLocaleString()} AOA</p>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

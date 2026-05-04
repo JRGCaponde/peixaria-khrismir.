@@ -1,98 +1,229 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { User, UserRole, Employee } from '../types/database'
+import CryptoJS from 'crypto-js'
+import { supabase, isSupabaseReady } from '../lib/supabase'
+
+interface User {
+  id: string
+  email: string
+  full_name: string
+  phone?: string
+  role: 'admin' | 'employee' | 'client'
+  created_at: string
+}
 
 interface AuthState {
   user: User | null
   isAuthenticated: boolean
-  login: (email: string, password: string) => boolean
-  logout: () => void
-  hasRole: (role: UserRole) => boolean
-  hasAccess: (area: string) => boolean
+  login: (email: string, password: string) => Promise<{ ok: boolean; lockedUntil?: number }>
+  logout: () => Promise<void>
+  requestReset: (email: string) => string | null
+  resetPassword: (email: string, newPassword: string, code: string) => boolean
+  initSupabaseSession: () => Promise<void>
+  createUser: (email: string, password: string, fullName: string, phone: string, role: 'employee' | 'admin' | 'client') => Promise<{ ok: boolean; supabaseId?: string; error?: string }>
 }
 
+// ── Bloqueio de tentativas (local) ─────────────────────────────
+const MAX_ATTEMPTS = 5
+const LOCK_MS = 15 * 60 * 1000
+
+function getAttempts(): Record<string, { count: number; since: number }> {
+  try { return JSON.parse(localStorage.getItem('khrismir_login_attempts') || '{}') } catch { return {} }
+}
+function saveAttempts(a: Record<string, { count: number; since: number }>) {
+  localStorage.setItem('khrismir_login_attempts', JSON.stringify(a))
+}
+function clearAttempts(email: string) {
+  const a = getAttempts(); delete a[email.toLowerCase()]; saveAttempts(a)
+}
+
+// ── Utilizadores padrão localStorage ──────────────────────────
+export function ensureDefaultUsers() {
+  const defaults = [
+    { id: 'admin-khrismir-001',    email: 'admin@khrismir.ao',       password: CryptoJS.SHA256('admin123').toString(), full_name: 'Administrador',     phone: '+244 929 970 984', role: 'admin',    created_at: '2025-01-01T00:00:00.000Z' },
+    { id: 'employee-khrismir-001', email: 'funcionario@khrismir.ao', password: CryptoJS.SHA256('func123').toString(),  full_name: 'Funcionário Padrão', phone: '',                  role: 'employee', created_at: '2025-01-01T00:00:00.000Z' },
+  ]
+  const stored: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+  let changed = false
+  for (const d of defaults) {
+    if (!stored.find((u: any) => u.id === d.id)) { stored.push(d); changed = true }
+  }
+  if (changed) localStorage.setItem('khrismir_clients', JSON.stringify(stored))
+
+  const emps: any[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
+  let empChanged = false
+  for (const d of defaults) {
+    if (!emps.find((u: any) => u.id === d.id)) { emps.push(d); empChanged = true }
+  }
+  if (empChanged) localStorage.setItem('khrismir_employees', JSON.stringify(emps))
+}
+ensureDefaultUsers()
+
+// ── Store ──────────────────────────────────────────────────────
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set, get) => ({
+    (set, _get) => ({
       user: null,
       isAuthenticated: false,
-      
-      login: (email: string, password: string) => {
-        // Admin fixo
-        if (email === 'jorgeamaral2009@gmail.com' && password === 'podescre0') {
+
+      // Restaurar sessão Supabase ao abrir o app
+      initSupabaseSession: async () => {
+        if (!isSupabaseReady() || !supabase) return
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) return
+        const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
+        if (profile) {
           set({
-            user: {
-              id: '1',
-              email: 'jorgeamaral2009@gmail.com',
-              full_name: 'Jorge Amaral',
-              phone: '929970984',
-              role: 'admin',
-              access_areas: ['all']
-            },
-            isAuthenticated: true
+            user: { id: session.user.id, email: session.user.email!, full_name: profile.full_name, phone: profile.phone, role: profile.role, created_at: profile.created_at },
+            isAuthenticated: true,
           })
-          return true
         }
-        
-        // Verificar funcionários cadastrados
-        const storedEmployees = localStorage.getItem('khrismir_employees')
-        if (storedEmployees) {
-          const employees = JSON.parse(storedEmployees)
-          const emp = employees.find((e: Employee) => e.email === email && e.password === password)
-          if (emp) {
-            const { password: _, ...userWithoutPassword } = emp
-            set({ user: userWithoutPassword as User, isAuthenticated: true })
-            return true
-          }
-        }
-        
-        // Verificar clientes cadastrados
-        const storedClients = localStorage.getItem('khrismir_clients')
-        if (storedClients) {
-          const clients = JSON.parse(storedClients)
-          const client = clients.find((c: any) => c.email === email && c.password === password)
-          if (client) {
-            const { password: _, ...userWithoutPassword } = client
-            set({ user: userWithoutPassword as User, isAuthenticated: true })
-            return true
-          }
-        }
-        
-        // Clientes demo
-        if (email === 'cliente@peixaria.com' && password === '123456') {
-          set({
-            user: {
-              id: '2',
-              email: 'cliente@peixaria.com',
-              full_name: 'Cliente Demo',
-              phone: '921000000',
-              role: 'client'
-            },
-            isAuthenticated: true
-          })
-          return true
-        }
-        
-        return false
       },
-      
-      logout: () => {
+
+      login: async (email, password) => {
+        const key = email.toLowerCase()
+        const attempts = getAttempts()
+        const entry = attempts[key]
+
+        // Verificar bloqueio local
+        if (entry && entry.count >= MAX_ATTEMPTS) {
+          const elapsed = Date.now() - entry.since
+          if (elapsed < LOCK_MS) return { ok: false, lockedUntil: entry.since + LOCK_MS }
+          delete attempts[key]; saveAttempts(attempts)
+        }
+
+        const recordFail = () => {
+          const now = Date.now()
+          attempts[key] = { count: (attempts[key]?.count ?? 0) + 1, since: attempts[key]?.since ?? now }
+          saveAttempts(attempts)
+        }
+
+        // ── Via Supabase Auth (quando configurado) ──
+        if (isSupabaseReady() && supabase) {
+          const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+          if (!error && data.session) {
+            const { data: profile } = await supabase.from('profiles').select('*').eq('id', data.user.id).maybeSingle()
+            clearAttempts(email)
+            set({
+              user: { id: data.user.id, email: data.user.email!, full_name: profile?.full_name ?? data.user.email!, phone: profile?.phone, role: profile?.role ?? 'client', created_at: profile?.created_at ?? new Date().toISOString() },
+              isAuthenticated: true,
+            })
+            return { ok: true }
+          }
+          // Supabase falhou — tentar localStorage como fallback (utilizadores locais: admin, funcionários)
+        }
+
+        // ── Via localStorage (sem Supabase ou fallback para utilizadores locais) ──
+        ensureDefaultUsers()
+        const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+        const hashed = CryptoJS.SHA256(password).toString()
+        const found = clients.find((u: any) => u.email.toLowerCase() === key && u.password === hashed)
+        if (!found) { recordFail(); return { ok: false } }
+        clearAttempts(email)
+        const { password: _pw, ...safe } = found
+        set({ user: safe as User, isAuthenticated: true })
+        return { ok: true }
+      },
+
+      logout: async () => {
+        if (isSupabaseReady() && supabase) await supabase.auth.signOut()
         set({ user: null, isAuthenticated: false })
       },
-      
-      hasRole: (role: UserRole) => {
-        const { user } = get()
-        return user?.role === role
+
+      requestReset: (email) => {
+        // Com Supabase: usar supabase.auth.resetPasswordForEmail
+        if (isSupabaseReady() && supabase) {
+          supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/auth?view=reset` })
+          return '__supabase__'
+        }
+        const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+        if (!clients.find((c: any) => c.email.toLowerCase() === email.toLowerCase())) return null
+        const code = Math.floor(100000 + Math.random() * 900000).toString()
+        const resets: Record<string, { code: string; expires: number }> = JSON.parse(localStorage.getItem('khrismir_resets') || '{}')
+        resets[email.toLowerCase()] = { code, expires: Date.now() + 30 * 60 * 1000 }
+        localStorage.setItem('khrismir_resets', JSON.stringify(resets))
+        return code
       },
-      
-      hasAccess: (area: string) => {
-        const { user } = get()
-        if (!user) return false
-        if (user.role === 'admin') return true
-        if (user.access_areas?.includes('all')) return true
-        return user.access_areas?.includes(area) ?? false
-      }
+
+      resetPassword: (email, newPassword, code) => {
+        const resets: Record<string, { code: string; expires: number }> = JSON.parse(localStorage.getItem('khrismir_resets') || '{}')
+        const entry = resets[email.toLowerCase()]
+        if (!entry || entry.code !== code || Date.now() > entry.expires) return false
+        const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+        const idx = clients.findIndex((c: any) => c.email.toLowerCase() === email.toLowerCase())
+        if (idx === -1) return false
+        clients[idx].password = CryptoJS.SHA256(newPassword).toString()
+        localStorage.setItem('khrismir_clients', JSON.stringify(clients))
+        delete resets[email.toLowerCase()]
+        localStorage.setItem('khrismir_resets', JSON.stringify(resets))
+        clearAttempts(email)
+        return true
+      },
+
+      createUser: async (email, password, fullName, phone, role) => {
+        let supabaseId: string | undefined
+
+        // Tenta criar utilizador no Supabase Auth usando um cliente temporário
+        // (cliente isolado para não afectar a sessão do admin actual)
+        if (isSupabaseReady() && supabase) {
+          try {
+            const { createClient } = await import('@supabase/supabase-js')
+            const tempClient = createClient(
+              import.meta.env.VITE_SUPABASE_URL,
+              import.meta.env.VITE_SUPABASE_ANON_KEY,
+              { auth: { storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} } as any } }
+            )
+            const { data, error } = await tempClient.auth.signUp({
+              email,
+              password,
+              options: { data: { full_name: fullName, role } },
+            })
+            if (!error && data.user) {
+              supabaseId = data.user.id
+              await supabase.from('profiles').upsert({
+                id: data.user.id,
+                email,
+                full_name: fullName,
+                phone: phone || null,
+                role,
+                created_at: new Date().toISOString(),
+              }, { onConflict: 'id' })
+            }
+          } catch (err: any) {
+            // non-fatal — continua com criação local
+          }
+        }
+
+        // Cria sempre em localStorage como fallback/offline
+        const hashed = CryptoJS.SHA256(password).toString()
+        const newUser: any = {
+          id: supabaseId ?? `local-${Date.now()}`,
+          full_name: fullName,
+          email,
+          phone: phone || '',
+          password: hashed,
+          role,
+          created_at: new Date().toISOString(),
+          supabase_synced: !!supabaseId,
+        }
+        const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+        localStorage.setItem('khrismir_clients', JSON.stringify([...clients, newUser]))
+        if (role === 'employee' || role === 'admin') {
+          const emps: any[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
+          localStorage.setItem('khrismir_employees', JSON.stringify([...emps, newUser]))
+        }
+        return { ok: true, supabaseId }
+      },
     }),
-    { name: 'khrismir_auth' }
-  )
+    { name: 'khrismir_auth_storage' },
+  ),
 )
+
+// Ouvir alterações de sessão Supabase (ex: refresh de token)
+if (isSupabaseReady() && supabase) {
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT' || !session) {
+      useAuthStore.setState({ user: null, isAuthenticated: false })
+    }
+  })
+}

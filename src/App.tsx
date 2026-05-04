@@ -1,36 +1,65 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useAuthStore } from './stores/useAuthStore'
-import Header from './components/Header'
-import Landing from './pages/Landing'
-import Auth from './pages/Auth'
-import Catalog from './pages/Catalog'
-import Cart from './pages/Cart'
-import Orders from './pages/Orders'
-import POS from './pages/POS'
-import Admin from './pages/Admin'
-import Verify from './pages/Verify'
+import { useState, useEffect } from 'react'
+import { isAppActive, syncLicenseFromCloud } from './lib/license'
+
+// Páginas
+import Header     from './components/Header'
+import Landing    from './pages/Landing'
+import Auth       from './pages/Auth'
+import Catalog    from './pages/Catalog'
+import Cart       from './pages/Cart'
+import Orders     from './pages/Orders'
+import POS        from './pages/POS'
+import Admin      from './pages/Admin'
+import Verify     from './pages/Verify'
+import Profile    from './pages/Profile'
+import CashFlow   from './pages/CashFlow'
+import Activation from './pages/Activation'
+
+// --- PROTECÇÃO DE ROTAS ---
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuthStore()
-  return isAuthenticated ? <>{children}</> : <Navigate to="/auth" />
+  return isAuthenticated ? <>{children}</> : <Navigate to="/auth" replace />
 }
 
 function StaffRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuthStore()
-  if (!isAuthenticated) return <Navigate to="/auth" />
-  if (user?.role === 'client') return <Navigate to="/catalog" />
+  if (!isAuthenticated)          return <Navigate to="/auth"    replace />
+  if (user?.role === 'client')   return <Navigate to="/catalog" replace />
   return <>{children}</>
 }
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuthStore()
-  if (!isAuthenticated) return <Navigate to="/auth" />
-  if (user?.role !== 'admin') return <Navigate to="/pos" />
+  if (!isAuthenticated)          return <Navigate to="/auth" replace />
+  if (user?.role !== 'admin')    return <Navigate to={user?.role === 'employee' ? '/pos' : '/catalog'} replace />
   return <>{children}</>
 }
 
+// --- APP PRINCIPAL ---
+
 export default function App() {
+  const { isAuthenticated, user } = useAuthStore()
+  const [appActive, setAppActive] = useState(() => isAppActive())
+
+  // Recupera licença da cloud caso localStorage tenha sido limpo
+  useEffect(() => {
+    syncLicenseFromCloud().then(() => setAppActive(isAppActive()))
+  }, [])
+
+  if (!appActive) {
+    return <Activation onActivated={() => setAppActive(true)} />
+  }
+
+  const getHomeRoute = () => {
+    if (user?.role === 'admin')    return '/admin'
+    if (user?.role === 'employee') return '/pos'
+    return '/catalog'
+  }
+
   return (
     <Router>
       <Toaster position="top-right" richColors />
@@ -38,15 +67,26 @@ export default function App() {
         <Header />
         <main className="container mx-auto py-6 px-4 md:px-8">
           <Routes>
-            <Route path="/" element={<Landing />} />
-            <Route path="/auth" element={<Auth />} />
-            <Route path="/catalog" element={<Protected><Catalog /></Protected>} />
-            <Route path="/cart" element={<Protected><Cart /></Protected>} />
-            <Route path="/orders" element={<Protected><Orders /></Protected>} />
-            <Route path="/pos" element={<StaffRoute><POS /></StaffRoute>} />
-            <Route path="/admin/*" element={<AdminRoute><Admin /></AdminRoute>} />
+            {/* Públicas */}
+            <Route path="/"       element={<Landing />} />
             <Route path="/verify" element={<Verify />} />
-            <Route path="*" element={<Navigate to="/" />} />
+            <Route path="/auth"   element={!isAuthenticated ? <Auth /> : <Navigate to={getHomeRoute()} replace />} />
+
+            {/* Cliente */}
+            <Route path="/catalog" element={<Protected><Catalog /></Protected>} />
+            <Route path="/cart"    element={<Protected><Cart /></Protected>} />
+            <Route path="/orders"  element={<Protected><Orders /></Protected>} />
+            <Route path="/profile" element={<Protected><Profile /></Protected>} />
+
+            {/* Staff */}
+            <Route path="/pos" element={<StaffRoute><POS /></StaffRoute>} />
+
+            {/* Admin */}
+            <Route path="/admin/*"    element={<AdminRoute><Admin /></AdminRoute>} />
+            <Route path="/cashflow"   element={<StaffRoute><CashFlow /></StaffRoute>} />
+
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to={isAuthenticated ? getHomeRoute() : '/'} replace />} />
           </Routes>
         </main>
       </div>

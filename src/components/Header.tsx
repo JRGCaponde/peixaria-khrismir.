@@ -1,12 +1,24 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/useAuthStore'
-import { Fish, User, LogOut, Menu, X } from 'lucide-react'
-import { useState } from 'react'
+import { Fish, User, LogOut, Menu, X, Bell } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { getPendingOrderCount, startOrderPolling, requestNotificationPermission } from '../lib/notifications'
 
 export default function Header() {
   const { user, isAuthenticated, logout } = useAuthStore()
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [pendingOrders, setPendingOrders] = useState(0)
+
+  useEffect(() => {
+    if (!isAuthenticated || user?.role === 'client') return
+    setPendingOrders(getPendingOrderCount())
+    requestNotificationPermission()
+    const stop = startOrderPolling(count => {
+      setPendingOrders(count)
+    })
+    return stop
+  }, [isAuthenticated, user?.role])
 
   const handleLogout = () => {
     logout()
@@ -39,6 +51,7 @@ export default function Header() {
                 {user?.role !== 'client' && (
                   <>
                     <Link to="/pos" className="hover:text-cyan-200 transition">PDV</Link>
+                    <Link to="/cashflow" className="hover:text-cyan-200 transition">Caixa</Link>
                     {user?.role === 'admin' && (
                       <Link to="/admin" className="hover:text-cyan-200 transition">Admin</Link>
                     )}
@@ -51,6 +64,12 @@ export default function Header() {
                   </>
                 )}
                 <div className="flex items-center gap-2 ml-4">
+                  {user?.role !== 'client' && pendingOrders > 0 && (
+                    <Link to="/admin" className="relative p-1.5 bg-white/20 rounded-full hover:bg-white/30 transition" title={`${pendingOrders} encomenda(s) pendente(s)`}>
+                      <Bell className="w-5 h-5" />
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-black rounded-full w-4 h-4 flex items-center justify-center">{pendingOrders > 9 ? '9+' : pendingOrders}</span>
+                    </Link>
+                  )}
                   <User className="w-4 h-4" />
                   <span className="text-sm">{user?.full_name}</span>
                   <button
@@ -92,6 +111,9 @@ export default function Header() {
                   <>
                     <Link to="/pos" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
                       PDV
+                    </Link>
+                    <Link to="/cashflow" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+                      Fluxo de Caixa
                     </Link>
                     {user?.role === 'admin' && (
                       <Link to="/admin" className="block py-2" onClick={() => setMobileMenuOpen(false)}>

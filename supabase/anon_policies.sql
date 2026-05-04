@@ -1,0 +1,9 @@
+create policy "anon sync categorias"  on categories     for all to anon using (true) with check (true);
+create policy "anon sync produtos"    on products       for all to anon using (true) with check (true);
+create policy "anon sync encomendas"  on orders         for all to anon using (true) with check (true);
+create policy "anon sync itens"       on order_items    for all to anon using (true) with check (true);
+create policy "anon sync caixa"       on cash_flow      for all to anon using (true) with check (true);
+create policy "anon sync compras"     on purchases      for all to anon using (true) with check (true);
+create policy "anon sync zonas"       on delivery_zones for all to anon using (true) with check (true);
+create policy "anon sync promos"      on promo_codes    for all to anon using (true) with check (true);
+create policy "anon sync settings"    on store_settings for all to anon using (true) with check (true);

@@ -1,12 +1,53 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "peixaria-khrismir",
+  "productName": "Peixaria Khrismir",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.5.0",
+  "description": "Sistema de Gestão de Peixaria",
+  "author": "Khrismir",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "build:web": "vite build --config vite.config.web.ts",
+    "preview": "vite preview",
+    "electron:dev": "NODE_ENV=development electron .",
+    "electron:build": "vite build && node build-app.mjs",
+    "electron:pack": "node build-app.mjs"
+  },
+  "build": {
+    "appId": "ao.khrismir.peixaria",
+    "productName": "Peixaria Khrismir",
+    "copyright": "© 2025 Khrismir",
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis",     "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Peixaria Khrismir",
+      "installerLanguages": ["pt_PT"],
+      "language": "2070"
+    },
+    "portable": {
+      "artifactName": "PeixariaKhrismir-Portatil-${version}.exe"
+    }
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -15,6 +56,7 @@
     "@tanstack/react-query": "^5.95.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "crypto-js": "^4.2.0",
     "date-fns": "^4.1.0",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.7.0",
@@ -34,11 +76,14 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.17",
+    "@types/crypto-js": "^4.2.2",
     "@types/node": "^22.0.0",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
     "electron": "^41.1.1",
+    "electron-builder": "^26.8.1",
+    "supabase": "^2.98.0",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.2.4",

@@ -1,8 +1,15 @@
 import { useState, useEffect } from 'react'
-import { Search, Trash2, X, Printer, Receipt } from 'lucide-react'
+import { Search, Trash2, X, Printer, Receipt, Tag } from 'lucide-react'
 import { toast } from 'sonner'
 import { QRCodeSVG } from 'qrcode.react'
-import type { Product, Category, CartItem, Order, PaymentType, PreparationType } from '../types/database'
+import type { Product, Category, CartItem, Order, PaymentType, PreparationType, PromoCode } from '../types/database'
+import { getSettings } from '../lib/settings'
+import { printInvoice } from '../utils/invoice'
+import { registerSaleMovement } from '../lib/cashflow'
+import { getOpenShift } from './_TurnoTab'
+import { calcOrderHash } from '../utils/saft'
+import { pullAll } from '../lib/sync'
+import { isSupabaseReady } from '../lib/supabase'
 
 const initialCategories: Category[] = [
   { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
@@ -25,40 +32,43 @@ interface POSCartItem extends CartItem {
 }
 
 export default function POS() {
+  const settings = getSettings()
   const [products, setProducts] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [cart, setCart] = useState<POSCartItem[]>([])
   const [paymentType, setPaymentType] = useState<PaymentType>('multicaixa')
+  const [selectedBank, setSelectedBank] = useState('')
+  const [bankAccounts, setBankAccounts] = useState<{ id: string; name: string }[]>([])
   const [showWeightDialog, setShowWeightDialog] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [weight, setWeight] = useState(1.0)
   const [preparation, setPreparation] = useState<PreparationType>('inteiro')
   const [showReceipt, setShowReceipt] = useState(false)
   const [lastOrder, setLastOrder] = useState<Order | null>(null)
+  const [promoInput, setPromoInput] = useState('')
+  const [appliedPromo, setAppliedPromo] = useState<PromoCode | null>(null)
 
-  // Load products and categories from localStorage
   useEffect(() => {
-    const savedProducts = localStorage.getItem('khrismir_products')
-    if (savedProducts) {
-      setProducts(JSON.parse(savedProducts))
-    } else {
-      // If no products, initialize with default ones and save
-      localStorage.setItem('khrismir_products', JSON.stringify(initialProducts))
-      setProducts(initialProducts)
+    const tryParse = (key: string, fallback: any) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback } }
+    const loadLocal = () => {
+      setProducts(tryParse('khrismir_products', initialProducts))
+      setCategories(tryParse('khrismir_categories', initialCategories))
+      setCart(tryParse('khrismir_pos_cart', []))
+      const banks: { id: string; name: string; type: string }[] = tryParse('cf_accounts', [])
+      const bankList = banks.filter(a => a.type === 'bank')
+      setBankAccounts(bankList)
+      if (bankList.length > 0) setSelectedBank(bankList[0].name)
     }
-
-    const savedCategories = localStorage.getItem('khrismir_categories')
-    if (savedCategories) {
-      setCategories(JSON.parse(savedCategories))
-    } else {
-      localStorage.setItem('khrismir_categories', JSON.stringify(initialCategories))
-      setCategories(initialCategories)
+    loadLocal()
+    // Sincroniza com Supabase para ter produtos/preços actualizados cross-device
+    if (isSupabaseReady()) {
+      pullAll().then(() => {
+        setProducts(tryParse('khrismir_products', initialProducts))
+        setCategories(tryParse('khrismir_categories', initialCategories))
+      })
     }
-
-    const savedCart = localStorage.getItem('khrismir_pos_cart')
-    if (savedCart) setCart(JSON.parse(savedCart))
   }, [])
 
   const saveCart = (newCart: POSCartItem[]) => {
@@ -86,6 +96,18 @@ export default function POS() {
 
   const addToCart = () => {
     if (!selectedProduct) return
+
+    // Verificar stock disponível (descontar o que já está no carrinho)
+    const alreadyInCart = cart
+      .filter(c => c.id === selectedProduct.id)
+      .reduce((sum, c) => sum + c.weight * c.quantity, 0)
+    const remaining = selectedProduct.stock_quantity - alreadyInCart
+
+    if (weight > remaining) {
+      toast.error(`Stock insuficiente! Disponível: ${remaining.toFixed(1)} kg`)
+      return
+    }
+
     const total = selectedProduct.price * weight
     const existing = cart.find(c => c.id === selectedProduct.id && c.preparation === preparation && c.weight === weight)
     if (existing) {
@@ -108,11 +130,31 @@ export default function POS() {
     saveCart(newCart)
   }
 
-  const cartTotal = cart.reduce((sum, c) => sum + c.weight * c.price * c.quantity, 0)
+  const cartSubtotal = cart.reduce((sum, c) => sum + c.weight * c.price * c.quantity, 0)
+  const discountAmount = appliedPromo
+    ? appliedPromo.discount_type === 'percentage' ? Math.round(cartSubtotal * appliedPromo.discount_value / 100) : appliedPromo.discount_value
+    : 0
+  const cartTotal = cartSubtotal - discountAmount
+
+  const applyPromo = () => {
+    const promos: PromoCode[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_promos') || '[]') } catch { return [] } })()
+    const code = promos.find(p => p.code === promoInput.toUpperCase() && p.active)
+    if (!code) { toast.error('Código inválido ou inactivo'); return }
+    if (code.max_uses && code.uses >= code.max_uses) { toast.error('Código esgotado'); return }
+    if (code.expires_at && new Date(code.expires_at) < new Date()) { toast.error('Código expirado'); return }
+    if (cartSubtotal < code.min_order) { toast.error(`Pedido mínimo: ${code.min_order.toLocaleString()} Kz`); return }
+    setAppliedPromo(code); toast.success(`Desconto ${code.discount_type === 'percentage' ? code.discount_value + '%' : code.discount_value.toLocaleString() + ' Kz'} aplicado!`)
+  }
 
   const handleCheckout = async () => {
     if (cart.length === 0) {
       toast.error('Carrinho vazio')
+      return
+    }
+
+    const openShift = getOpenShift()
+    if (!openShift) {
+      toast.warning('Abra um turno antes de processar vendas. Vá a Caixa → Turno.')
       return
     }
 
@@ -122,18 +164,21 @@ export default function POS() {
         loading: 'A processar venda...',
         success: () => {
           const orderNumber = `PKH-${Math.floor(10000 + Math.random() * 90000)}`
-          // Hash gerado para AGT: ${generateHash()}
-          
-          const newOrder: Order = {
-            id: Date.now().toString(),
+          const now = Date.now()
+
+          const orderBase = {
+            id: now.toString(),
             order_number: orderNumber,
-            status: 'pronto',
+            status: 'pronto' as const,
             payment_type: paymentType,
-            delivery_type: 'retirada',
+            delivery_type: 'retirada' as const,
+            subtotal: cartSubtotal,
+            discount_code: appliedPromo?.code,
+            discount_amount: discountAmount || undefined,
             total: cartTotal,
             items: cart.map((c, i) => ({
-              id: `${Date.now()}-${i}`,
-              order_id: Date.now().toString(),
+              id: `${now}-${i}`,
+              order_id: now.toString(),
               product_id: c.id,
               product_name: c.name,
               quantity: c.weight * c.quantity,
@@ -141,8 +186,11 @@ export default function POS() {
               preparation: c.preparation,
               total_price: c.weight * c.price * c.quantity
             })),
-            created_at: new Date().toISOString()
+            created_at: new Date().toISOString(),
           }
+
+          // Calcular hash AGT antes de guardar
+          const newOrder: Order = { ...orderBase, hash: calcOrderHash(orderBase) }
 
           // Save order
           const orders = JSON.parse(localStorage.getItem('khrismir_orders') || '[]')
@@ -159,24 +207,30 @@ export default function POS() {
           })
           localStorage.setItem('khrismir_products', JSON.stringify(storedProducts))
 
-          // Cash flow
-          const cashFlow = JSON.parse(localStorage.getItem('khrismir_cashflow') || '[]')
-          cashFlow.unshift({
-            id: Date.now().toString(),
-            type: 'entrada',
-            amount: cartTotal,
-            description: `Venda #${orderNumber}`,
-            order_number: orderNumber,
-            payment_type: paymentType,
-            created_at: new Date().toISOString()
-          })
-          localStorage.setItem('khrismir_cashflow', JSON.stringify(cashFlow))
+          // Regista no Fluxo de Caixa — para Multicaixa usa o banco escolhido
+          const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
+          registerSaleMovement(cartTotal, orderNumber, paymentType, now.toString(), bankAccount)
 
-          // Clear cart
+          // Pontos de fidelização (1 ponto por 1000 AOA, apenas para clientes identificados)
+          if (newOrder.customer_id) {
+            const loyaltyTx = { id: Date.now().toString(), client_id: newOrder.customer_id, client_name: newOrder.customer_name || '', points: Math.floor(cartTotal / 1000), type: 'earned', order_id: newOrder.id, created_at: new Date().toISOString() }
+            const loyalty = JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]')
+            loyalty.push(loyaltyTx)
+            localStorage.setItem('khrismir_loyalty', JSON.stringify(loyalty))
+          }
+
+          if (appliedPromo) {
+            const promos: PromoCode[] = JSON.parse(localStorage.getItem('khrismir_promos') || '[]')
+            const pi = promos.findIndex(p => p.id === appliedPromo.id)
+            if (pi !== -1) { promos[pi].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)) }
+          }
+
           saveCart([])
-          setLastOrder({ ...newOrder, items: newOrder.items.map(item => ({ ...item, total_price: item.total_price })) })
+          setAppliedPromo(null)
+          setPromoInput('')
+          setLastOrder(newOrder)
           setShowReceipt(true)
-          
+
           return `Venda ${orderNumber} concluída!`
         },
         error: 'Erro ao processar venda'
@@ -286,8 +340,47 @@ export default function POS() {
                 </button>
               ))}
             </div>
+            {paymentType === 'multicaixa' && bankAccounts.length > 0 && (
+              <div className="mt-2">
+                <label className="text-xs text-gray-500 font-medium block mb-1">Banco de destino</label>
+                <select
+                  value={selectedBank}
+                  onChange={e => setSelectedBank(e.target.value)}
+                  className="w-full border border-cyan-300 bg-cyan-50 p-2 rounded-lg text-sm font-medium text-cyan-800 focus:ring-2 focus:ring-cyan-500"
+                >
+                  {bankAccounts.map(b => (
+                    <option key={b.id} value={b.name}>{b.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
+          {/* Promo */}
+          <div>
+            {appliedPromo ? (
+              <div className="flex items-center justify-between bg-green-50 border border-green-200 p-2 rounded-lg text-sm">
+                <span className="text-green-700 font-bold font-mono">{appliedPromo.code} — -{discountAmount.toLocaleString()} Kz</span>
+                <button onClick={() => { setAppliedPromo(null); setPromoInput('') }} className="text-green-500 hover:text-green-700 text-lg leading-none">×</button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <input value={promoInput} onChange={e => setPromoInput(e.target.value.toUpperCase())}
+                  placeholder="Código promo..." onKeyDown={e => e.key === 'Enter' && applyPromo()}
+                  className="flex-1 border p-2 rounded-lg text-xs font-mono uppercase" />
+                <button onClick={applyPromo} className="bg-gray-100 px-2 rounded-lg hover:bg-gray-200"><Tag className="w-4 h-4" /></button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between text-sm text-gray-500">
+            <span>Subtotal</span><span>{cartSubtotal.toLocaleString('pt-AO')} AOA</span>
+          </div>
+          {discountAmount > 0 && (
+            <div className="flex justify-between text-sm text-green-600 font-medium">
+              <span>Desconto</span><span>-{discountAmount.toLocaleString('pt-AO')} AOA</span>
+            </div>
+          )}
           <div className="flex justify-between text-lg font-bold">
             <span>Total:</span>
             <span>{cartTotal.toLocaleString('pt-AO')} AOA</span>
@@ -389,10 +482,10 @@ export default function POS() {
             {/* Receipt */}
             <div className="bg-white border-2 border-gray-200 rounded-lg p-4 text-sm font-mono">
               <div className="text-center border-b pb-2 mb-2">
-                <h3 className="font-bold">PEIXARIA KHRISMIR</h3>
-                <p className="text-xs">Centralidade da Quilemba, Lubango</p>
-                <p className="text-xs">Tel: 929 970 984 / 924 359 638</p>
-                <p className="text-xs">NIF: 5001210092</p>
+                <h3 className="font-bold">{settings.name.toUpperCase()}</h3>
+                <p className="text-xs">{settings.address}</p>
+                <p className="text-xs">Tel: {settings.phone}</p>
+                <p className="text-xs">NIF: {settings.nif}</p>
               </div>
 
               <p className="text-center font-bold my-2">RECIBO # {lastOrder.order_number}</p>
@@ -427,10 +520,10 @@ export default function POS() {
 
             <div className="flex gap-2 mt-4">
               <button
-                onClick={() => window.print()}
+                onClick={() => lastOrder && printInvoice(lastOrder, settings)}
                 className="flex-1 bg-gray-100 py-2 rounded-lg font-medium flex items-center justify-center gap-2"
               >
-                <Printer className="w-4 h-4" /> Imprimir
+                <Printer className="w-4 h-4" /> Imprimir Fatura
               </button>
               <button
                 onClick={() => setShowReceipt(false)}
