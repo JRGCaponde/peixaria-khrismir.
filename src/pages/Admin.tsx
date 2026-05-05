@@ -11,12 +11,13 @@ import {
   Database, Upload, Wallet, Search, Filter,
   Receipt, MessageCircle, Download, Clock, ShoppingBag,
   Settings, MapPin, Tag, UserCheck, Printer, Truck, RotateCcw,
-  Star, CalendarDays, AlertTriangle, QrCode, Share2, X, DollarSign, Monitor,
+  Star, CalendarDays, AlertTriangle, QrCode, Share2, X, DollarSign, Monitor, FileBarChart2,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, DeliveryZone, PromoCode, Supplier, Return, LoyaltyTransaction } from '../types/database'
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
 import { printInvoice } from '../utils/invoice'
+import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport } from '../utils/reports'
 import { registerPurchaseMovement, getCashFlowSummary, syncAllData, migrateExistingData } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
@@ -220,6 +221,7 @@ export default function Admin() {
     { id: 'agt',        label: 'AGT / Fiscal',  icon: FileText                     },
     { id: 'settings',   label: 'Configurações', icon: Settings                     },
     { id: 'system',     label: 'Sistema',       icon: Database                     },
+    { id: 'reports',    label: 'Relatórios',    icon: FileBarChart2                },
     { id: 'sessions',   label: 'Sessões Online', icon: Monitor, adminOnly: true    },
   ]
 
@@ -271,6 +273,7 @@ export default function Admin() {
         {activeTab === 'agt'        && <AGTTab orders={orders} storeSettings={storeSettings} purchases={purchases} />}
         {activeTab === 'settings'   && <SettingsTab settings={storeSettings} onSave={s => { setStoreSettings(s); saveSettings(s); syncSettings(s) }} />}
         {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
+        {activeTab === 'reports'    && <ReportsTab orders={orders} purchases={purchases} storeSettings={storeSettings} />}
         {activeTab === 'sessions'   && <SessionsTab />}
       </div>
     </div>
@@ -1796,6 +1799,165 @@ function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s
           Guardar Configurações
         </button>
       </form>
+    </div>
+  )
+}
+
+/* ─── RELATÓRIOS PDF ─── */
+function ReportsTab({ orders, purchases, storeSettings }: { orders: Order[]; purchases: Purchase[]; storeSettings: StoreSettings }) {
+  const today = new Date().toISOString().slice(0, 10)
+  const thisMonth = today.slice(0, 7)
+
+  const [dailyDate, setDailyDate]   = useState(today)
+  const [salesMonth, setSalesMonth] = useState(thisMonth)
+  const [purchFrom, setPurchFrom]   = useState(today.slice(0, 8) + '01')
+  const [purchTo,   setPurchTo]     = useState(today)
+  const [moMonth,   setMoMonth]     = useState(thisMonth)
+  const [cfFrom,    setCfFrom]      = useState(today.slice(0, 8) + '01')
+  const [cfTo,      setCfTo]        = useState(today)
+
+  const cashFlow: CashFlow[] = (() => {
+    try { return JSON.parse(localStorage.getItem('khrismir_cashflow') || '[]') } catch { return [] }
+  })()
+
+  const card = (icon: React.ReactNode, title: string, desc: string, children: React.ReactNode) => (
+    <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="w-10 h-10 rounded-xl bg-cyan-50 flex items-center justify-center text-cyan-600">{icon}</div>
+        <div><p className="font-bold text-gray-800">{title}</p><p className="text-xs text-gray-400">{desc}</p></div>
+      </div>
+      {children}
+    </div>
+  )
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-3 mb-2">
+        <FileBarChart2 className="w-6 h-6 text-cyan-600" />
+        <div>
+          <h2 className="text-xl font-bold text-gray-800">Relatórios PDF</h2>
+          <p className="text-xs text-gray-400">Todos os relatórios abrem numa nova janela para imprimir ou guardar como PDF</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+        {/* Vendas Diárias */}
+        {card(
+          <FileBarChart2 className="w-5 h-5" />,
+          'Relatório de Vendas Diário',
+          'Todas as vendas de um dia com totais, IVA e meios de pagamento',
+          <div className="flex gap-2 items-end">
+            <div className="flex-1">
+              <label className="text-xs text-gray-500 mb-1 block">Data</label>
+              <input type="date" value={dailyDate} onChange={e => setDailyDate(e.target.value)}
+                className="w-full border p-2.5 rounded-xl text-sm focus:ring-2 focus:ring-cyan-400" />
+            </div>
+            <button onClick={() => printDailySalesReport(orders, storeSettings, dailyDate)}
+              className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">
+              <Download className="w-4 h-4" /> PDF
+            </button>
+          </div>
+        )}
+
+        {/* Vendas Mensais */}
+        {card(
+          <CalendarDays className="w-5 h-5" />,
+          'Relatório de Vendas Mensal',
+          'Vendas por dia, por método de pagamento e detalhe completo',
+          <div className="flex gap-2 items-end">
+            <div className="flex-1">
+              <label className="text-xs text-gray-500 mb-1 block">Mês</label>
+              <input type="month" value={salesMonth} onChange={e => setSalesMonth(e.target.value)}
+                className="w-full border p-2.5 rounded-xl text-sm focus:ring-2 focus:ring-cyan-400" />
+            </div>
+            <button onClick={() => {
+              const [y, m] = salesMonth.split('-').map(Number)
+              printMonthlySalesReport(orders, storeSettings, y, m)
+            }}
+              className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">
+              <Download className="w-4 h-4" /> PDF
+            </button>
+          </div>
+        )}
+
+        {/* Compras */}
+        {card(
+          <ShoppingBag className="w-5 h-5" />,
+          'Relatório de Compras',
+          'Compras por fornecedor, tipo e detalhe de artigos no período',
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 mb-1 block">De</label>
+                <input type="date" value={purchFrom} onChange={e => setPurchFrom(e.target.value)}
+                  className="w-full border p-2.5 rounded-xl text-sm" />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 mb-1 block">Até</label>
+                <input type="date" value={purchTo} onChange={e => setPurchTo(e.target.value)}
+                  className="w-full border p-2.5 rounded-xl text-sm" />
+              </div>
+            </div>
+            <button onClick={() => printPurchasesReport(purchases, storeSettings, purchFrom, purchTo)}
+              className="w-full flex items-center justify-center gap-2 bg-amber-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-amber-700 transition">
+              <Download className="w-4 h-4" /> Gerar PDF de Compras
+            </button>
+          </div>
+        )}
+
+        {/* Relatório Mensal Completo */}
+        {card(
+          <TrendingUp className="w-5 h-5" />,
+          'Relatório Mensal Completo',
+          'Vendas + Compras + Balanço + Top Produtos — resumo executivo',
+          <div className="flex gap-2 items-end">
+            <div className="flex-1">
+              <label className="text-xs text-gray-500 mb-1 block">Mês</label>
+              <input type="month" value={moMonth} onChange={e => setMoMonth(e.target.value)}
+                className="w-full border p-2.5 rounded-xl text-sm focus:ring-2 focus:ring-purple-400" />
+            </div>
+            <button onClick={() => {
+              const [y, m] = moMonth.split('-').map(Number)
+              printMonthlyReport(orders, purchases, cashFlow, storeSettings, y, m)
+            }}
+              className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-purple-700 transition">
+              <Download className="w-4 h-4" /> PDF
+            </button>
+          </div>
+        )}
+
+        {/* Fluxo de Caixa */}
+        {card(
+          <Wallet className="w-5 h-5" />,
+          'Relatório de Fluxo de Caixa',
+          'Todas as entradas e saídas de caixa no período',
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 mb-1 block">De</label>
+                <input type="date" value={cfFrom} onChange={e => setCfFrom(e.target.value)}
+                  className="w-full border p-2.5 rounded-xl text-sm" />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 mb-1 block">Até</label>
+                <input type="date" value={cfTo} onChange={e => setCfTo(e.target.value)}
+                  className="w-full border p-2.5 rounded-xl text-sm" />
+              </div>
+            </div>
+            <button onClick={() => printCashFlowReport(cashFlow, storeSettings, cfFrom, cfTo)}
+              className="w-full flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-green-700 transition">
+              <Download className="w-4 h-4" /> Gerar PDF de Caixa
+            </button>
+          </div>
+        )}
+
+      </div>
+
+      <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-sm text-blue-700">
+        <p className="font-bold mb-1">💡 Como guardar em PDF</p>
+        <p>Ao clicar em qualquer botão PDF, abre uma nova janela. Na caixa de impressão, seleccione <strong>"Guardar como PDF"</strong> como impressora.</p>
+      </div>
     </div>
   )
 }
