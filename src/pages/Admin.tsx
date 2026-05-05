@@ -11,7 +11,7 @@ import {
   Database, Upload, Wallet, Search, Filter,
   Receipt, MessageCircle, Download, Clock, ShoppingBag,
   Settings, MapPin, Tag, UserCheck, Printer, Truck, RotateCcw,
-  Star, CalendarDays, AlertTriangle, QrCode, Share2, X,
+  Star, CalendarDays, AlertTriangle, QrCode, Share2, X, DollarSign, Monitor,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, DeliveryZone, PromoCode, Supplier, Return, LoyaltyTransaction } from '../types/database'
@@ -21,14 +21,16 @@ import { registerPurchaseMovement, getCashFlowSummary, syncAllData, migrateExist
 import {
   syncOrderStatus, pullAll, pushAll,
   syncProducts, syncCategories, syncDeliveryZones, syncPromos, syncSettings,
+  syncPurchases, clearAllData,
   deleteProduct, deleteCategory, deleteZone, deletePromo,
 } from '../lib/sync'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 import { generateSAFTXML, downloadSAFT } from '../utils/saft'
 import { useAuthStore } from '../stores/useAuthStore'
+import { subscribePresence, type OnlineUser } from '../lib/presence'
 
-type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system'
+type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system' | 'sessions'
 
 const statusConfig: Record<OrderStatus, { label: string; color: string; next?: OrderStatus }> = {
   pendente:   { label: 'Pendente',   color: 'bg-yellow-100 text-yellow-800',  next: 'confirmado' },
@@ -70,6 +72,10 @@ function playNotificationSound() {
 }
 
 export default function Admin() {
+  const { user: authUser } = useAuthStore()
+  const isAdmin = authUser?.role === 'admin'
+  const gerenteAreas: string[] = (authUser?.role === 'gerente' && authUser?.access_areas) ? authUser.access_areas : []
+
   const [activeTab, setActiveTab] = useState<Tab>('overview')
   const [categories, setCategories] = useState<Category[]>([])
   const [products,   setProducts]   = useState<Product[]>([])
@@ -185,7 +191,7 @@ export default function Admin() {
   }, [])
 
   const todayTotal = orders
-    .filter(o => new Date(o.created_at).toDateString() === new Date().toDateString())
+    .filter(o => new Date(o.created_at).toDateString() === new Date().toDateString() && o.status !== 'cancelado')
     .reduce((sum, o) => sum + o.total, 0)
   const lowStock = products.filter(p => p.stock_quantity <= p.min_stock)
   const pendingOrders = orders.filter(o => o.status === 'pendente').length
@@ -196,7 +202,7 @@ export default function Admin() {
     return days <= 7 && days >= 0
   })
 
-  const tabs: { id: Tab; label: string; icon: React.ElementType; badge?: number }[] = [
+  const allTabs: { id: Tab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
     { id: 'overview',   label: 'Visão Geral',   icon: TrendingUp, badge: expiringProducts.length > 0 ? expiringProducts.length : undefined },
     { id: 'orders',     label: 'Encomendas',    icon: ShoppingBag, badge: pendingOrders },
     { id: 'products',   label: 'Produtos',      icon: Package                      },
@@ -214,7 +220,13 @@ export default function Admin() {
     { id: 'agt',        label: 'AGT / Fiscal',  icon: FileText                     },
     { id: 'settings',   label: 'Configurações', icon: Settings                     },
     { id: 'system',     label: 'Sistema',       icon: Database                     },
+    { id: 'sessions',   label: 'Sessões Online', icon: Monitor, adminOnly: true    },
   ]
+
+  // Filtra tabs: admin vê tudo, gerente vê só as áreas autorizadas (+ sessões excluído)
+  const tabs = isAdmin
+    ? allTabs
+    : allTabs.filter(t => !t.adminOnly && gerenteAreas.includes(t.id))
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 p-4 lg:p-0">
@@ -259,6 +271,7 @@ export default function Admin() {
         {activeTab === 'agt'        && <AGTTab orders={orders} storeSettings={storeSettings} purchases={purchases} />}
         {activeTab === 'settings'   && <SettingsTab settings={storeSettings} onSave={s => { setStoreSettings(s); saveSettings(s); syncSettings(s) }} />}
         {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
+        {activeTab === 'sessions'   && <SessionsTab />}
       </div>
     </div>
   )
@@ -274,10 +287,10 @@ function OverviewTab({ orders, total, lowStock, products }: { orders: Order[]; t
   const last7 = Array.from({ length: 7 }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (6 - i))
     const ds = d.toDateString()
-    const day = orders.filter(o => new Date(o.created_at).toDateString() === ds)
+    const day = orders.filter(o => new Date(o.created_at).toDateString() === ds && o.status !== 'cancelado')
     return { dia: d.toLocaleDateString('pt-AO', { weekday: 'short', day: 'numeric' }), total: day.reduce((s, o) => s + o.total, 0), pedidos: day.length }
   })
-  const byPayment = ['multicaixa', 'express', 'dinheiro'].map(t => ({ name: t.charAt(0).toUpperCase() + t.slice(1), value: orders.filter(o => o.payment_type === t).length })).filter(p => p.value > 0)
+  const byPayment = ['multicaixa', 'express', 'dinheiro'].map(t => ({ name: t.charAt(0).toUpperCase() + t.slice(1), value: orders.filter(o => o.payment_type === t && o.status !== 'cancelado').length })).filter(p => p.value > 0)
   const monthTotal = cfSummary.monthIncome
   const monthProfit = cfSummary.monthIncome - cfSummary.monthExpense
   const expiringProducts = products.filter(p => {
@@ -619,12 +632,17 @@ function OrdersTab({ orders, setOrders, storeSettings }: { orders: Order[]; setO
 
 /* ─── PRODUTOS ─── */
 function ProductsTab({ products, setProducts, categories }: { products: Product[]; setProducts: (p: Product[]) => void; categories: Category[] }) {
-  const [modal, setModal]     = useState<'new' | 'edit' | null>(null)
-  const [editing, setEditing] = useState<Product | null>(null)
-  const [form, setForm]       = useState<Partial<Product>>({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' })
+  const [modal, setModal]               = useState<'new' | 'edit' | null>(null)
+  const [editing, setEditing]           = useState<Product | null>(null)
+  const [form, setForm]                 = useState<Partial<Product>>({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' })
+  const [qrProduct, setQrProduct]       = useState<Product | null>(null)
+  const [discountProduct, setDiscountProduct] = useState<Product | null>(null)
+  const [discountVal, setDiscountVal]   = useState('')
+  const [priceProduct, setPriceProduct] = useState<Product | null>(null)
+  const [priceVal, setPriceVal]         = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const openNew = () => { setForm({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' }); setEditing(null); setModal('new') }
+  const openNew  = () => { setForm({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' }); setEditing(null); setModal('new') }
   const openEdit = (p: Product) => { setForm({ ...p }); setEditing(p); setModal('edit') }
   const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
@@ -655,6 +673,36 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
     toast.success('Produto eliminado')
   }
 
+  const saveDiscount = () => {
+    const pct = Math.min(100, Math.max(0, Number(discountVal)))
+    const updated = products.map(p => p.id === discountProduct!.id ? { ...p, discount: pct } : p)
+    setProducts(updated); localStorage.setItem('khrismir_products', JSON.stringify(updated)); syncProducts(updated)
+    setDiscountProduct(null)
+    toast.success(pct > 0 ? `Desconto de ${pct}% aplicado!` : 'Desconto removido')
+  }
+
+  const savePrice = () => {
+    const newPrice = Math.max(0, Number(priceVal))
+    if (!newPrice) { toast.error('Preço inválido'); return }
+    const updated = products.map(p => p.id === priceProduct!.id ? { ...p, price: newPrice } : p)
+    setProducts(updated); localStorage.setItem('khrismir_products', JSON.stringify(updated)); syncProducts(updated)
+    setPriceProduct(null)
+    toast.success('Preço atualizado!')
+  }
+
+  const printQr = (p: Product) => {
+    const win = window.open('', '_blank', 'width=400,height=500')
+    if (!win) return
+    win.document.write(`<html><body style="text-align:center;font-family:sans-serif;padding:20px">
+      <h2>${p.name}</h2>
+      <div id="qr"></div>
+      <p style="font-size:11px;color:#666">ID: ${p.id}</p>
+      <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+      <script>QRCode.toCanvas(document.createElement('canvas'),'product:${p.id}',function(e,c){if(!e){document.getElementById('qr').appendChild(c)}});setTimeout(()=>window.print(),800)</script>
+    </body></html>`)
+    win.document.close()
+  }
+
   return (
     <div className="bg-white rounded-2xl shadow-sm p-6">
       <div className="flex justify-between items-center mb-8">
@@ -666,31 +714,47 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <thead><tr className="text-gray-400 text-sm border-b">
-            <th className="pb-4">Produto</th><th className="pb-4">Preço (Kz/kg)</th><th className="pb-4">Stock</th><th className="pb-4 text-right">Acções</th>
+            <th className="pb-4">Produto</th><th className="pb-4">Preço (AOA/kg)</th><th className="pb-4">Stock</th><th className="pb-4 text-right">Acções</th>
           </tr></thead>
           <tbody className="divide-y">
-            {products.map(p => (
-              <tr key={p.id} className="group">
-                <td className="py-3 flex items-center gap-3">
-                  {p.image_url ? <img src={p.image_url} alt={p.name} className="w-10 h-10 rounded-lg object-cover" /> : <div className="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center text-xl">🐟</div>}
-                  <span className="font-semibold">{p.name}</span>
-                </td>
-                <td className="py-3">{Number(p.price).toLocaleString()}</td>
-                <td className="py-3">
-                  <span className={`px-2 py-1 rounded-lg text-xs font-bold ${p.stock_quantity <= p.min_stock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                    {p.stock_quantity} {p.unit}
-                  </span>
-                </td>
-                <td className="py-3 text-right flex justify-end gap-1">
-                  <button onClick={() => openEdit(p)} className="text-gray-400 hover:text-cyan-600 p-2 transition"><Edit className="w-4 h-4" /></button>
-                  <button onClick={() => del(p.id)} className="text-gray-400 hover:text-red-600 p-2 transition"><Trash2 className="w-4 h-4" /></button>
-                </td>
-              </tr>
-            ))}
+            {products.map(p => {
+              const discountedPrice = p.discount ? Math.round(p.price * (1 - p.discount / 100)) : null
+              return (
+                <tr key={p.id} className="group">
+                  <td className="py-3 flex items-center gap-3">
+                    {p.image_url ? <img src={p.image_url} alt={p.name} className="w-10 h-10 rounded-lg object-cover" /> : <div className="w-10 h-10 bg-cyan-100 rounded-lg flex items-center justify-center text-xl">🐟</div>}
+                    <span className="font-semibold">{p.name}</span>
+                  </td>
+                  <td className="py-3">
+                    <div>
+                      <span className={discountedPrice ? 'line-through text-gray-400 text-sm' : 'font-medium'}>{Number(p.price).toLocaleString()}</span>
+                      {discountedPrice && (
+                        <span className="ml-2 font-bold text-green-600">{discountedPrice.toLocaleString()} <span className="text-xs bg-green-100 text-green-700 px-1 rounded">-{p.discount}%</span></span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="py-3">
+                    <span className={`px-2 py-1 rounded-lg text-xs font-bold ${p.stock_quantity <= p.min_stock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                      {p.stock_quantity} {p.unit}
+                    </span>
+                  </td>
+                  <td className="py-3 text-right">
+                    <div className="flex justify-end gap-1">
+                      <button onClick={() => setQrProduct(p)} title="QR Code" className="text-gray-400 hover:text-purple-600 p-2 transition"><QrCode className="w-4 h-4" /></button>
+                      <button onClick={() => { setDiscountProduct(p); setDiscountVal(String(p.discount ?? 0)) }} title="Desconto" className="text-gray-400 hover:text-orange-500 p-2 transition"><Tag className="w-4 h-4" /></button>
+                      <button onClick={() => { setPriceProduct(p); setPriceVal(String(p.price)) }} title="Editar Preço" className="text-gray-400 hover:text-green-600 p-2 transition"><DollarSign className="w-4 h-4" /></button>
+                      <button onClick={() => openEdit(p)} title="Editar" className="text-gray-400 hover:text-cyan-600 p-2 transition"><Edit className="w-4 h-4" /></button>
+                      <button onClick={() => del(p.id)} title="Eliminar" className="text-gray-400 hover:text-red-600 p-2 transition"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
 
+      {/* ── Modal Editar/Criar ── */}
       {modal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <form onSubmit={save} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -739,6 +803,71 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
           </form>
         </div>
       )}
+
+      {/* ── Modal QR Code ── */}
+      {qrProduct && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-2xl text-center">
+            <h3 className="font-bold text-lg mb-1">{qrProduct.name}</h3>
+            <p className="text-sm text-gray-500 mb-5">{Number(qrProduct.price).toLocaleString()} AOA/{qrProduct.unit}</p>
+            <div className="flex justify-center mb-4">
+              <QRCodeSVG value={`product:${qrProduct.id}`} size={200} level="M" />
+            </div>
+            <p className="text-xs text-gray-400 font-mono break-all mb-6">product:{qrProduct.id}</p>
+            <div className="flex gap-2">
+              <button onClick={() => printQr(qrProduct)} className="flex-1 bg-gray-800 text-white py-2.5 rounded-xl text-sm font-bold hover:bg-gray-900 transition flex items-center justify-center gap-2">
+                <Printer className="w-4 h-4" /> Imprimir
+              </button>
+              <button onClick={() => setQrProduct(null)} className="flex-1 bg-gray-100 py-2.5 rounded-xl text-sm font-medium hover:bg-gray-200 transition">Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Desconto ── */}
+      {discountProduct && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-2xl">
+            <h3 className="font-bold text-lg mb-1 flex items-center gap-2"><Tag className="w-5 h-5 text-orange-500" /> Desconto</h3>
+            <p className="text-sm text-gray-500 mb-1">{discountProduct.name}</p>
+            <p className="text-sm text-gray-700 mb-4">Preço base: <strong>{Number(discountProduct.price).toLocaleString()} AOA/{discountProduct.unit}</strong></p>
+            <div className="relative mb-3">
+              <input type="number" min="0" max="100" value={discountVal} onChange={e => setDiscountVal(e.target.value)}
+                placeholder="0" className="w-full border-2 border-orange-200 focus:border-orange-400 p-3 rounded-xl text-2xl font-bold text-center pr-12" />
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-orange-400">%</span>
+            </div>
+            {Number(discountVal) > 0 && Number(discountVal) <= 100 && (
+              <div className="bg-green-50 border border-green-200 rounded-xl p-3 mb-4 text-center">
+                <p className="text-xs text-green-600">Preço com desconto</p>
+                <p className="text-xl font-black text-green-700">{Math.round(discountProduct.price * (1 - Number(discountVal)/100)).toLocaleString()} AOA/{discountProduct.unit}</p>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={saveDiscount} className="flex-1 bg-orange-500 text-white py-2.5 rounded-xl font-bold hover:bg-orange-600 transition">Aplicar</button>
+              <button onClick={() => setDiscountProduct(null)} className="flex-1 bg-gray-100 py-2.5 rounded-xl text-sm font-medium hover:bg-gray-200 transition">Cancelar</button>
+            </div>
+            {discountProduct.discount ? (
+              <button onClick={() => { setDiscountVal('0'); saveDiscount() }} className="w-full mt-2 text-xs text-red-400 hover:text-red-600">Remover desconto actual ({discountProduct.discount}%)</button>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Editar Preço ── */}
+      {priceProduct && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-2xl">
+            <h3 className="font-bold text-lg mb-1 flex items-center gap-2"><DollarSign className="w-5 h-5 text-green-600" /> Editar Preço</h3>
+            <p className="text-sm text-gray-500 mb-4">{priceProduct.name} — actual: <strong>{Number(priceProduct.price).toLocaleString()} AOA/{priceProduct.unit}</strong></p>
+            <input type="number" min="0" value={priceVal} onChange={e => setPriceVal(e.target.value)}
+              placeholder="Novo preço (AOA)" className="w-full border-2 border-green-200 focus:border-green-400 p-3 rounded-xl text-xl font-bold text-center mb-4" />
+            <div className="flex gap-2">
+              <button onClick={savePrice} className="flex-1 bg-green-600 text-white py-2.5 rounded-xl font-bold hover:bg-green-700 transition">Guardar</button>
+              <button onClick={() => setPriceProduct(null)} className="flex-1 bg-gray-100 py-2.5 rounded-xl text-sm font-medium hover:bg-gray-200 transition">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -776,22 +905,43 @@ function CategoriesTab({ categories, setCategories }: { categories: Category[]; 
 }
 
 /* ─── EQUIPA ─── */
+const GERENTE_TABS: { id: string; label: string }[] = [
+  { id: 'overview',   label: 'Visão Geral'   },
+  { id: 'orders',     label: 'Encomendas'    },
+  { id: 'products',   label: 'Produtos'      },
+  { id: 'categories', label: 'Categorias'    },
+  { id: 'customers',  label: 'Clientes'      },
+  { id: 'cashflow',   label: 'Financeiro'    },
+  { id: 'purchases',  label: 'Compras/Stock' },
+  { id: 'suppliers',  label: 'Fornecedores'  },
+  { id: 'returns',    label: 'Devoluções'    },
+  { id: 'loyalty',    label: 'Fidelização'   },
+  { id: 'calendar',   label: 'Calendário'    },
+  { id: 'delivery',   label: 'Zonas Entrega' },
+  { id: 'promos',     label: 'Promoções'     },
+  { id: 'agt',        label: 'AGT / Fiscal'  },
+  { id: 'settings',   label: 'Configurações' },
+]
+
 function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmployees: (e: User[]) => void }) {
   const { createUser } = useAuthStore()
   const [isOpen, setIsOpen]   = useState(false)
   const [saving, setSaving]   = useState(false)
-  const [form, setForm]       = useState({ name: '', email: '', phone: '', password: '', role: 'employee' as 'employee' | 'admin' })
+  const [form, setForm]       = useState({ name: '', email: '', phone: '', password: '', role: 'employee' as 'employee' | 'admin' | 'gerente' })
+  const [accessAreas, setAccessAreas] = useState<string[]>([])
+
+  const toggleArea = (id: string) => setAccessAreas(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault()
     setSaving(true)
-    const result = await createUser(form.email, form.password, form.name, form.phone, form.role)
+    const result = await createUser(form.email, form.password, form.name, form.phone, form.role, form.role === 'gerente' ? accessAreas : undefined)
     if (result.ok) {
-      // Recarrega lista actualizada do localStorage (createUser já escreveu lá)
       const updated: User[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
       setEmployees(updated)
       setIsOpen(false)
       setForm({ name: '', email: '', phone: '', password: '', role: 'employee' })
+      setAccessAreas([])
       toast.success(result.supabaseId ? '✅ Funcionário criado no Supabase!' : '✅ Acesso local criado!')
     } else {
       toast.error(result.error ?? 'Erro ao criar funcionário')
@@ -808,36 +958,44 @@ function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmplo
     toast.success('Funcionário removido')
   }
 
+  const roleLabel: Record<string, string> = { admin: 'Administrador', employee: 'Funcionário', gerente: 'Gerente' }
+  const roleColor: Record<string, string> = { admin: 'bg-red-100 text-red-700', employee: 'bg-blue-100 text-blue-700', gerente: 'bg-purple-100 text-purple-700' }
+
   return (
     <div className="bg-white rounded-2xl p-6 shadow-sm">
       <div className="flex justify-between mb-8">
         <h2 className="text-xl font-bold">Equipa de Trabalho</h2>
         <button onClick={() => setIsOpen(true)} className="bg-gray-800 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm hover:bg-gray-900 transition">
-          <Plus className="w-4 h-4" /> Novo Funcionário
+          <Plus className="w-4 h-4" /> Novo Membro
         </button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {employees.map(emp => (
-          <div key={emp.id} className="border p-4 rounded-2xl flex justify-between items-center bg-gray-50/50">
-            <div>
-              <div className="flex items-center gap-2">
+          <div key={emp.id} className="border p-4 rounded-2xl flex justify-between items-start bg-gray-50/50">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
                 <p className="font-bold text-gray-800">{emp.full_name}</p>
                 {(emp as any).supabase_synced && (
                   <span className="text-xs bg-cyan-100 text-cyan-700 px-2 py-0.5 rounded-full font-medium">☁ Cloud</span>
                 )}
+                <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${roleColor[emp.role] ?? 'bg-gray-100 text-gray-600'}`}>
+                  {roleLabel[emp.role] ?? emp.role}
+                </span>
               </div>
-              <p className="text-xs text-gray-500 uppercase font-bold tracking-widest">{emp.role}</p>
-              {emp.email && <p className="text-xs text-gray-400">{emp.email}</p>}
+              {emp.email && <p className="text-xs text-gray-400 mt-0.5">{emp.email}</p>}
+              {emp.role === 'gerente' && emp.access_areas && emp.access_areas.length > 0 && (
+                <p className="text-xs text-purple-500 mt-1">Acesso: {emp.access_areas.map(a => GERENTE_TABS.find(t => t.id === a)?.label ?? a).join(', ')}</p>
+              )}
             </div>
-            <button onClick={() => remove(emp.id)} className="text-red-400 hover:text-red-600">
+            <button onClick={() => remove(emp.id)} className="text-red-400 hover:text-red-600 ml-2 mt-0.5">
               <Trash2 className="w-4 h-4" />
             </button>
           </div>
         ))}
       </div>
       {isOpen && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <form onSubmit={add} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl">
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <form onSubmit={add} className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl my-4">
             <h3 className="text-xl font-bold mb-2">Criar Conta de Acesso</h3>
             <p className="text-xs text-gray-400 mb-6">Conta criada localmente e no Supabase (quando disponível)</p>
             <div className="space-y-4">
@@ -845,10 +1003,28 @@ function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmplo
               <input type="email" placeholder="Email" required value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} className="w-full border p-3 rounded-xl" />
               <input type="tel" placeholder="Telefone (opcional)" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} className="w-full border p-3 rounded-xl" />
               <input type="password" placeholder="Senha (mín. 6 caracteres)" required minLength={6} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} className="w-full border p-3 rounded-xl" />
-              <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as any })} className="w-full border p-3 rounded-xl">
+              <select value={form.role} onChange={e => { setForm({ ...form, role: e.target.value as any }); setAccessAreas([]) }} className="w-full border p-3 rounded-xl">
                 <option value="employee">Funcionário (POS)</option>
-                <option value="admin">Administrador</option>
+                <option value="gerente">Gerente (Acesso Controlado ao Admin)</option>
+                <option value="admin">Administrador (Acesso Total)</option>
               </select>
+
+              {/* Checkboxes de abas para gerente */}
+              {form.role === 'gerente' && (
+                <div className="border rounded-xl p-3 space-y-2">
+                  <p className="text-xs font-bold text-purple-700 mb-2">Áreas de acesso do Gerente:</p>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {GERENTE_TABS.map(t => (
+                      <label key={t.id} className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                        <input type="checkbox" checked={accessAreas.includes(t.id)} onChange={() => toggleArea(t.id)}
+                          className="accent-purple-600 w-3.5 h-3.5" />
+                        {t.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <button type="submit" disabled={saving} className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition disabled:opacity-60">
                 {saving ? 'A criar...' : 'Criar'}
               </button>
@@ -933,7 +1109,7 @@ function CustomersTab({ orders }: { orders: Order[] }) {
         </div>
         <div className="space-y-3">
           {filtered.map((c: any) => {
-            const ords = clientOrders(c.id)
+            const ords = clientOrders(c.id).filter((o: any) => o.status !== 'cancelado')
             const total = ords.reduce((s: number, o: any) => s + o.total, 0)
             return (
               <div key={c.id} className="border border-gray-100 rounded-2xl p-4 flex flex-wrap justify-between items-center gap-3">
@@ -979,7 +1155,7 @@ function CustomersTab({ orders }: { orders: Order[] }) {
                       <span className="font-bold text-sm">{o.order_number}</span>
                       <span className="font-bold text-cyan-600 text-sm">{o.total.toLocaleString()} Kz</span>
                     </div>
-                    <p className="text-xs text-gray-500">{new Date(o.created_at).toLocaleDateString('pt-AO')} • {statusConfig[o.status as OrderStatus]?.label}</p>
+                    <p className="text-xs text-gray-500">{new Date(o.created_at).toLocaleString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })} • {statusConfig[o.status as OrderStatus]?.label}</p>
                   </div>
                 ))}
               </div>
@@ -1061,7 +1237,7 @@ function CashFlowTab(_props: { cashFlow: CashFlow[]; setCashFlow: (c: CashFlow[]
                 <div key={m.id} className="flex justify-between items-center p-3 bg-green-50 rounded-xl">
                   <div>
                     <p className="text-sm font-medium">{m.description}</p>
-                    <p className="text-xs text-gray-400">{m.date} · {m.account}</p>
+                    <p className="text-xs text-gray-400">{m.created_at ? new Date(m.created_at).toLocaleString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : m.date} · {m.account}</p>
                   </div>
                   <p className="text-sm font-bold text-green-600">+{m.amount.toLocaleString()} AOA</p>
                 </div>
@@ -1081,7 +1257,7 @@ function CashFlowTab(_props: { cashFlow: CashFlow[]; setCashFlow: (c: CashFlow[]
                 <div key={m.id} className="flex justify-between items-center p-3 bg-red-50 rounded-xl">
                   <div>
                     <p className="text-sm font-medium">{m.description}</p>
-                    <p className="text-xs text-gray-400">{m.date} · {m.account}</p>
+                    <p className="text-xs text-gray-400">{m.created_at ? new Date(m.created_at).toLocaleString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : m.date} · {m.account}</p>
                   </div>
                   <p className="text-sm font-bold text-red-600">-{m.amount.toLocaleString()} AOA</p>
                 </div>
@@ -1122,6 +1298,7 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
 
     // Regista automaticamente no Fluxo de Caixa (ID determinístico evita duplicados no sync)
     registerPurchaseMovement(total, prod?.name || 'Produto', form.provider, form.account || undefined, newP.id)
+    syncPurchases([newP])
 
     setForm({ pid: '', qty: '', price: '', provider: '', account: '' }); toast.success('Compra registada!')
   }
@@ -1364,7 +1541,7 @@ function PromosTab() {
 /* ─── AGT / FISCAL ─── */
 function AGTTab({ orders, storeSettings, purchases }: { orders: Order[]; storeSettings: StoreSettings; purchases: Purchase[] }) {
   const ivaRate = storeSettings.iva_rate / 100
-  const totalFaturado = orders.reduce((s, o) => s + o.total, 0)
+  const totalFaturado = orders.filter(o => o.status !== 'cancelado').reduce((s, o) => s + o.total, 0)
   const totalIVA = totalFaturado * ivaRate
 
   const [saftYear, setSaftYear] = useState(new Date().getFullYear())
@@ -1402,7 +1579,7 @@ function AGTTab({ orders, storeSettings, purchases }: { orders: Order[]; storeSe
   const exportMonthlyBalance = () => {
     const [y, m] = balanceMonth.split('-').map(Number)
     const monthOrders = orders.filter(o => {
-      const d = new Date(o.created_at); return d.getFullYear() === y && d.getMonth() + 1 === m
+      const d = new Date(o.created_at); return d.getFullYear() === y && d.getMonth() + 1 === m && o.status !== 'cancelado'
     })
     const monthPurchases = purchases.filter(p => {
       const d = new Date(p.date); return d.getFullYear() === y && d.getMonth() + 1 === m
@@ -1581,6 +1758,74 @@ function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s
   )
 }
 
+/* ─── SESSÕES ONLINE ─── */
+function SessionsTab() {
+  const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([])
+
+  useEffect(() => {
+    const unsub = subscribePresence(users => setOnlineUsers(users))
+    return unsub
+  }, [])
+
+  const roleLabel: Record<string, string> = { admin: 'Administrador', employee: 'Funcionário', gerente: 'Gerente', client: 'Cliente' }
+  const roleColor: Record<string, string> = {
+    admin:    'bg-red-100 text-red-700',
+    employee: 'bg-blue-100 text-blue-700',
+    gerente:  'bg-purple-100 text-purple-700',
+    client:   'bg-green-100 text-green-700',
+  }
+
+  return (
+    <div className="bg-white rounded-2xl p-6 shadow-sm space-y-6">
+      <div className="flex items-center gap-3">
+        <Monitor className="w-6 h-6 text-cyan-600" />
+        <div>
+          <h2 className="text-xl font-bold text-gray-800">Sessões Online</h2>
+          <p className="text-xs text-gray-400">Utilizadores com sessão activa neste momento</p>
+        </div>
+        <span className="ml-auto bg-green-100 text-green-700 text-sm font-bold px-3 py-1 rounded-full flex items-center gap-1.5">
+          <span className="w-2 h-2 bg-green-500 rounded-full inline-block animate-pulse" />
+          {onlineUsers.length} online
+        </span>
+      </div>
+
+      {onlineUsers.length === 0 ? (
+        <div className="text-center py-16 text-gray-400">
+          <Monitor className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Nenhum utilizador online de momento</p>
+          <p className="text-xs mt-1">O tracking por Presence requer ligação Supabase</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {onlineUsers.map((u, i) => (
+            <div key={`${u.id}-${i}`} className="border rounded-2xl p-4 bg-gray-50/50 flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-cyan-100 flex items-center justify-center text-cyan-700 font-bold text-sm shrink-0">
+                {u.name?.charAt(0)?.toUpperCase() ?? '?'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-bold text-gray-800 truncate">{u.name}</p>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${roleColor[u.role] ?? 'bg-gray-100 text-gray-600'}`}>
+                    {roleLabel[u.role] ?? u.role}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 truncate">{u.email}</p>
+                <div className="flex items-center gap-3 mt-1.5">
+                  <span className="text-xs text-gray-500">{u.device}</span>
+                  <span className="text-xs text-gray-400">
+                    Desde {new Date(u.joinedAt).toLocaleTimeString('pt-AO', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+              </div>
+              <div className="w-2.5 h-2.5 bg-green-500 rounded-full mt-1 shrink-0 animate-pulse" title="Online" />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ─── SISTEMA ─── */
 function SystemTab({ products, categories }: { products: Product[]; categories: Category[] }) {
   const [syncing, setSyncing] = useState(false)
@@ -1612,22 +1857,28 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
     }
   }
 
+  const BACKUP_MAP: Record<string, string> = {
+    products:     'khrismir_products',
+    categories:   'khrismir_categories',
+    orders:       'khrismir_orders',
+    cashflow:     'khrismir_cashflow',
+    purchases:    'khrismir_purchases',
+    employees:    'khrismir_employees',
+    settings:     'khrismir_settings',
+    promos:       'khrismir_promos',
+    delivery:     'khrismir_delivery_zones',
+    shifts:       'khrismir_shifts',
+    loyalty:      'khrismir_loyalty',
+    clients:      'khrismir_clients',
+    cf_movements: 'cf_movements',
+    cf_accounts:  'cf_accounts',
+    cf_categories:'cf_categories',
+  }
+
   const downloadBackup = () => {
     const ls = (k: string, fb: any) => { try { return JSON.parse(localStorage.getItem(k) || 'null') ?? fb } catch { return fb } }
-    const data = {
-      exportedAt:   new Date().toISOString(),
-      products:     ls('khrismir_products',       []),
-      categories:   ls('khrismir_categories',     []),
-      orders:       ls('khrismir_orders',          []),
-      cashflow:     ls('khrismir_cashflow',        []),
-      purchases:    ls('khrismir_purchases',       []),
-      employees:    ls('khrismir_employees',       []),
-      settings:     ls('khrismir_settings',        {}),
-      promos:       ls('khrismir_promos',          []),
-      delivery:     ls('khrismir_delivery_zones',  []),
-      cf_movements: ls('cf_movements',             []),
-      cf_accounts:  ls('cf_accounts',              []),
-    }
+    const data: Record<string, any> = { exportedAt: new Date().toISOString() }
+    Object.entries(BACKUP_MAP).forEach(([key, lsKey]) => { data[key] = ls(lsKey, []) })
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url
     a.download = `khrismir-backup-${new Date().toLocaleDateString('pt-AO').replace(/\//g, '-')}.json`; a.click(); URL.revokeObjectURL(url)
@@ -1640,36 +1891,109 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
     reader.onload = async ev => {
       try {
         const data = JSON.parse(ev.target?.result as string)
-        // Guardar tudo no localStorage
-        const map: Record<string, string> = {
-          products:     'khrismir_products',
-          categories:   'khrismir_categories',
-          orders:       'khrismir_orders',
-          cashflow:     'khrismir_cashflow',
-          purchases:    'khrismir_purchases',
-          employees:    'khrismir_employees',
-          settings:     'khrismir_settings',
-          promos:       'khrismir_promos',
-          delivery:     'khrismir_delivery_zones',
-          cf_movements: 'cf_movements',
-          cf_accounts:  'cf_accounts',
-        }
-        Object.entries(map).forEach(([k, v]) => { if (data[k] !== undefined) localStorage.setItem(v, JSON.stringify(data[k])) })
+        if (!data.exportedAt && !data.products) { toast.error('Ficheiro inválido — não é um backup Khrismir'); return }
 
-        // Sincronizar com Supabase para que web/Vercel veja os mesmos dados
-        const tid = toast.loading('A sincronizar com a cloud…')
+        // Confirmação obrigatória — restauro total apaga tudo
+        const ok = confirm(
+          `⚠️ RESTAURO TOTAL\n\nEsta acção vai:\n` +
+          `1. Apagar TODOS os dados existentes (local e cloud)\n` +
+          `2. Carregar apenas os dados deste backup (${new Date(data.exportedAt).toLocaleString('pt-AO')})\n\n` +
+          `Continuar?`
+        )
+        if (!ok) { e.target.value = ''; return }
+
+        // ── FASE 1: Apagar tudo ──────────────────────────────────
+        const tid = toast.loading('Fase 1/3 — A apagar dados existentes…')
+
+        // 1a. Apagar Supabase via RPC reset_all_data() (SECURITY DEFINER — bypassa RLS)
+        await clearAllData()
+
+        // 1b. Limpar localStorage completamente
+        localStorage.clear()
+
+        // ── FASE 2: Carregar backup ──────────────────────────────
+        toast.loading('Fase 2/3 — A carregar dados do backup…', { id: tid })
+
+        // Desduplicar ordens por order_number antes de restaurar
+        // (previne duplicate key se o backup tiver o mesmo order_number com ids diferentes)
+        if (Array.isArray(data.orders)) {
+          const seen = new Set<string>()
+          data.orders = data.orders.filter((o: any) => {
+            const key = o.order_number || o.id
+            if (!key || seen.has(key)) return false
+            seen.add(key)
+            return true
+          })
+        }
+
+        // Escrever backup no localStorage
+        Object.entries(BACKUP_MAP).forEach(([key, lsKey]) => {
+          if (data[key] !== undefined) localStorage.setItem(lsKey, JSON.stringify(data[key]))
+        })
+
+        // ── FASE 3: Sincronizar para cloud ───────────────────────
+        toast.loading('Fase 3/3 — A sincronizar com a cloud…', { id: tid })
         const result = await pushAll()
+
         toast.dismiss(tid)
         if (result.ok) {
-          toast.success(`Backup importado e sincronizado! ${result.details.filter(d => d.startsWith('✅')).length} tabelas actualizadas.`)
+          toast.success(`✅ Restauro completo! ${result.details.filter(d => d.startsWith('✅')).length} tabelas sincronizadas.`)
         } else {
-          toast.success('Backup importado localmente.')
-          toast.info('Sincronização parcial — verifique a ligação à internet.')
+          toast.success('✅ Backup restaurado localmente.')
+          toast.warning('Sincronização cloud parcial — verifique a ligação.')
         }
-        setTimeout(() => window.location.reload(), 2000)
-      } catch { toast.error('Ficheiro inválido') }
+        setTimeout(() => window.location.reload(), 1800)
+      } catch (err) { toast.error('Ficheiro inválido ou corrompido') }
     }
     reader.readAsText(file); e.target.value = ''
+  }
+
+  const handleReset = async () => {
+    if (!confirm('⚠️ ATENÇÃO\n\nEsta acção apaga TODOS os dados:\n• Produtos, categorias, encomendas\n• Compras, caixa, movimentos\n• Turnos, promoções, entregas\n\nOs dados serão eliminados do local E da cloud.\n\nContinuar?')) return
+    if (!confirm('Última confirmação — não é possível recuperar os dados depois.\n\nApagar tudo?')) return
+
+    const tid = toast.loading('A apagar todos os dados…')
+    // Limpar localStorage
+    localStorage.clear()
+    // Limpar Supabase
+    await clearAllData()
+    toast.dismiss(tid)
+    toast.success('Sistema reiniciado — todos os dados apagados.')
+    setTimeout(() => window.location.reload(), 1500)
+  }
+
+  // Restaurar dados a partir da cloud (limpa localStorage local e puxa Supabase)
+  // Útil quando outro dispositivo já fez o backup restore e este ainda tem dados antigos
+  const handleRestoreFromCloud = async () => {
+    if (!confirm(
+      '☁️ RESTAURAR DA CLOUD\n\n' +
+      'Esta acção vai:\n' +
+      '1. Apagar os dados locais deste dispositivo\n' +
+      '2. Puxar os dados actuais do Supabase\n\n' +
+      'O Supabase NÃO será alterado.\n\nContinuar?'
+    )) return
+
+    const tid = toast.loading('Fase 1/2 — A limpar dados locais…')
+    // Preservar credenciais de sessão (não apagar o login)
+    const sessionKeys = ['khrismir_user', 'khrismir_settings']
+    const saved: Record<string, string> = {}
+    sessionKeys.forEach(k => { const v = localStorage.getItem(k); if (v) saved[k] = v })
+
+    localStorage.clear()
+
+    // Restaurar sessão
+    Object.entries(saved).forEach(([k, v]) => localStorage.setItem(k, v))
+
+    toast.loading('Fase 2/2 — A puxar dados da cloud…', { id: tid })
+    try {
+      await pullAll()
+      toast.dismiss(tid)
+      toast.success('✅ Dados restaurados da cloud com sucesso!')
+      setTimeout(() => window.location.reload(), 1200)
+    } catch (e: any) {
+      toast.dismiss(tid)
+      toast.error('Erro ao puxar dados da cloud: ' + (e?.message ?? 'desconhecido'))
+    }
   }
 
   return (
@@ -1691,6 +2015,17 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
             </label>
           </div>
         </div>
+        <div className="p-4 border border-green-100 rounded-2xl bg-green-50/30">
+          <h4 className="font-bold text-green-800 mb-1">☁️ Restaurar da Cloud</h4>
+          <p className="text-sm text-green-700 mb-3">
+            Limpa os dados locais deste dispositivo e puxar os dados actuais do Supabase.<br />
+            <span className="text-xs text-green-600">Use quando outro dispositivo já fez o restore e este ainda tem dados antigos.</span>
+          </p>
+          <button onClick={handleRestoreFromCloud}
+            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-green-700 transition">
+            <RotateCcw className="w-4 h-4" /> Restaurar da Cloud
+          </button>
+        </div>
         <div className="p-4 border border-cyan-100 rounded-2xl bg-cyan-50/30">
           <h4 className="font-bold text-cyan-800 mb-2">Fluxo de Caixa</h4>
           <p className="text-sm text-cyan-700 mb-3">Importar compras e movimentos históricos para o Fluxo de Caixa.</p>
@@ -1700,11 +2035,12 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
           </button>
         </div>
         <div className="p-4 border border-red-100 rounded-2xl bg-red-50/30">
-          <h4 className="font-bold text-red-800 mb-2">Zona de Perigo</h4>
-          <p className="text-sm text-red-600/70 mb-4">Limpar todos os dados do navegador e reiniciar.</p>
-          <button onClick={() => { if (!confirm('Apagar TODOS os dados? Esta acção não pode ser desfeita!')) return; localStorage.clear(); window.location.reload() }}
-            className="text-red-600 border border-red-200 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-600 hover:text-white transition">
-            Reset Total
+          <h4 className="font-bold text-red-800 mb-2">⚠️ Zona de Perigo</h4>
+          <p className="text-sm text-red-600/70 mb-1">Apaga <strong>todos</strong> os dados — local e na cloud (Supabase).</p>
+          <p className="text-xs text-red-400 mb-4">Produtos, encomendas, compras, caixa, turnos e promoções serão eliminados permanentemente.</p>
+          <button onClick={handleReset}
+            className="text-red-600 border-2 border-red-300 px-4 py-2 rounded-xl text-sm font-bold hover:bg-red-600 hover:text-white transition">
+            🗑️ Reset Total (Local + Cloud)
           </button>
         </div>
       </div>
@@ -1860,7 +2196,7 @@ function ReturnsTab({ orders, products, setProducts, setOrders }: {
                     <div className="flex justify-between items-start">
                       <div>
                         <p className="font-bold text-sm">{o.order_number}</p>
-                        <p className="text-xs text-gray-500">{o.customer_name || 'POS'} • {new Date(o.created_at).toLocaleDateString('pt-AO')}</p>
+                        <p className="text-xs text-gray-500">{o.customer_name || 'POS'} • {new Date(o.created_at).toLocaleString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</p>
                         <p className="text-xs font-bold text-cyan-600">{o.total.toLocaleString()} AOA</p>
                       </div>
                       {alreadyReturned ? <span className="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded-full">Devolvida</span> : (

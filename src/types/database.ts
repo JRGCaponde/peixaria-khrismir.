@@ -1,5 +1,5 @@
 // Database Types for Peixaria Khrismir
-export type UserRole = 'admin' | 'employee' | 'client'
+export type UserRole = 'admin' | 'employee' | 'gerente' | 'client'
 
 export interface User {
   id: string
@@ -10,7 +10,7 @@ export interface User {
   company_name?: string
   tax_id?: string
   role: UserRole
-  access_areas?: string[]
+  access_areas?: string[]   // tabs do admin acessíveis pelo gerente
   created_at?: string
 }
 
@@ -40,6 +40,7 @@ export interface Product {
   category_id: string
   image_url?: string
   expiry_date?: string
+  discount?: number       // desconto em % (0-100)
   created_at?: string
 }
 

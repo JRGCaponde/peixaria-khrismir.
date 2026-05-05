@@ -2,13 +2,15 @@ import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import CryptoJS from 'crypto-js'
 import { supabase, isSupabaseReady } from '../lib/supabase'
+import { startPresenceTracking, stopPresenceTracking } from '../lib/presence'
 
 interface User {
   id: string
   email: string
   full_name: string
   phone?: string
-  role: 'admin' | 'employee' | 'client'
+  role: 'admin' | 'employee' | 'gerente' | 'client'
+  access_areas?: string[]   // tabs que o gerente pode aceder
   created_at: string
 }
 
@@ -20,7 +22,7 @@ interface AuthState {
   requestReset: (email: string) => string | null
   resetPassword: (email: string, newPassword: string, code: string) => boolean
   initSupabaseSession: () => Promise<void>
-  createUser: (email: string, password: string, fullName: string, phone: string, role: 'employee' | 'admin' | 'client') => Promise<{ ok: boolean; supabaseId?: string; error?: string }>
+  createUser: (email: string, password: string, fullName: string, phone: string, role: 'employee' | 'admin' | 'gerente' | 'client', access_areas?: string[]) => Promise<{ ok: boolean; supabaseId?: string; error?: string }>
 }
 
 // ── Bloqueio de tentativas (local) ─────────────────────────────
@@ -73,10 +75,9 @@ export const useAuthStore = create<AuthState>()(
         if (!session) return
         const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
         if (profile) {
-          set({
-            user: { id: session.user.id, email: session.user.email!, full_name: profile.full_name, phone: profile.phone, role: profile.role, created_at: profile.created_at },
-            isAuthenticated: true,
-          })
+          const u: User = { id: session.user.id, email: session.user.email!, full_name: profile.full_name, phone: profile.phone, role: profile.role, access_areas: profile.access_areas, created_at: profile.created_at }
+          set({ user: u, isAuthenticated: true })
+          startPresenceTracking(u)
         }
       },
 
@@ -104,10 +105,9 @@ export const useAuthStore = create<AuthState>()(
           if (!error && data.session) {
             const { data: profile } = await supabase.from('profiles').select('*').eq('id', data.user.id).maybeSingle()
             clearAttempts(email)
-            set({
-              user: { id: data.user.id, email: data.user.email!, full_name: profile?.full_name ?? data.user.email!, phone: profile?.phone, role: profile?.role ?? 'client', created_at: profile?.created_at ?? new Date().toISOString() },
-              isAuthenticated: true,
-            })
+            const u: User = { id: data.user.id, email: data.user.email!, full_name: profile?.full_name ?? data.user.email!, phone: profile?.phone, role: profile?.role ?? 'client', access_areas: profile?.access_areas, created_at: profile?.created_at ?? new Date().toISOString() }
+            set({ user: u, isAuthenticated: true })
+            startPresenceTracking(u)
             return { ok: true }
           }
           // Supabase falhou — tentar localStorage como fallback (utilizadores locais: admin, funcionários)
@@ -122,10 +122,12 @@ export const useAuthStore = create<AuthState>()(
         clearAttempts(email)
         const { password: _pw, ...safe } = found
         set({ user: safe as User, isAuthenticated: true })
+        startPresenceTracking(safe as User)
         return { ok: true }
       },
 
       logout: async () => {
+        stopPresenceTracking()
         if (isSupabaseReady() && supabase) await supabase.auth.signOut()
         set({ user: null, isAuthenticated: false })
       },
@@ -160,7 +162,7 @@ export const useAuthStore = create<AuthState>()(
         return true
       },
 
-      createUser: async (email, password, fullName, phone, role) => {
+      createUser: async (email, password, fullName, phone, role, access_areas) => {
         let supabaseId: string | undefined
 
         // Tenta criar utilizador no Supabase Auth usando um cliente temporário
@@ -186,6 +188,7 @@ export const useAuthStore = create<AuthState>()(
                 full_name: fullName,
                 phone: phone || null,
                 role,
+                access_areas: access_areas ?? null,
                 created_at: new Date().toISOString(),
               }, { onConflict: 'id' })
             }
@@ -203,12 +206,13 @@ export const useAuthStore = create<AuthState>()(
           phone: phone || '',
           password: hashed,
           role,
+          access_areas: access_areas ?? [],
           created_at: new Date().toISOString(),
           supabase_synced: !!supabaseId,
         }
         const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
         localStorage.setItem('khrismir_clients', JSON.stringify([...clients, newUser]))
-        if (role === 'employee' || role === 'admin') {
+        if (role === 'employee' || role === 'admin' || role === 'gerente') {
           const emps: any[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
           localStorage.setItem('khrismir_employees', JSON.stringify([...emps, newUser]))
         }

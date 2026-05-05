@@ -34,9 +34,9 @@ function StaffRoute({ children }: { children: React.ReactNode }) {
 
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuthStore()
-  if (!isAuthenticated)          return <Navigate to="/auth" replace />
-  if (user?.role !== 'admin')    return <Navigate to={user?.role === 'employee' ? '/pos' : '/catalog'} replace />
-  return <>{children}</>
+  if (!isAuthenticated) return <Navigate to="/auth" replace />
+  if (user?.role === 'admin' || user?.role === 'gerente') return <>{children}</>
+  return <Navigate to={user?.role === 'employee' ? '/pos' : '/catalog'} replace />
 }
 
 // --- APP PRINCIPAL ---
@@ -55,7 +55,7 @@ export default function App() {
   }
 
   const getHomeRoute = () => {
-    if (user?.role === 'admin')    return '/admin'
+    if (user?.role === 'admin' || user?.role === 'gerente') return '/admin'
     if (user?.role === 'employee') return '/pos'
     return '/catalog'
   }

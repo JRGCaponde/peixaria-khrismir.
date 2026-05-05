@@ -319,7 +319,7 @@ function Dashboard({ totalBalance, todayIncome, todayExpense, monthIncome, month
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-medium truncate">{m.description}</p>
-                    <p className="text-xs text-gray-400">{m.date}</p>
+                    <p className="text-xs text-gray-400">{m.created_at ? format(new Date(m.created_at), 'dd/MM/yyyy HH:mm') : m.date}</p>
                   </div>
                   <p className={`text-xs font-semibold ${m.type === 'income' ? 'text-green-600' : m.type === 'expense' ? 'text-red-600' : 'text-blue-600'}`}>
                     {m.type === 'income' ? '+' : m.type === 'expense' ? '-' : ''}{m.amount.toLocaleString()}
@@ -546,7 +546,7 @@ function Movements({ movements, setMovements, accounts, setAccounts, categories 
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-gray-900 truncate">{m.description}</p>
                   <p className="text-xs text-gray-400">
-                    {m.date} · {m.account}{m.accountTo ? ` → ${m.accountTo}` : ''}{m.category ? ` · ${m.category}` : ''}{m.reference ? ` · Ref: ${m.reference}` : ''}
+                    {m.created_at ? format(new Date(m.created_at), 'dd/MM/yyyy HH:mm') : m.date} · {m.account}{m.accountTo ? ` → ${m.accountTo}` : ''}{m.category ? ` · ${m.category}` : ''}{m.reference ? ` · Ref: ${m.reference}` : ''}
                   </p>
                 </div>
                 <p className={`text-sm font-bold flex-shrink-0 ${m.type === 'income' ? 'text-green-600' : m.type === 'expense' ? 'text-red-600' : 'text-blue-600'}`}>
@@ -993,7 +993,7 @@ function Reports({ movements, categories, accounts }: { movements: CashMovement[
               <tbody className="divide-y">
                 {filtered.map(m => (
                   <tr key={m.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 text-gray-600">{m.date}</td>
+                    <td className="px-4 py-3 text-gray-600">{m.created_at ? format(new Date(m.created_at), 'dd/MM/yyyy HH:mm') : m.date}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${m.type === 'income' ? 'bg-green-100 text-green-700' : m.type === 'expense' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
                         {m.type === 'income' ? 'Entrada' : m.type === 'expense' ? 'Saída' : 'Transferência'}

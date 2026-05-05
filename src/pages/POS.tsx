@@ -1,15 +1,15 @@
 import { useState, useEffect } from 'react'
-import { Search, Trash2, X, Printer, Receipt, Tag } from 'lucide-react'
+import { Search, Trash2, X, Printer, Receipt, Tag, ShoppingBag, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { QRCodeSVG } from 'qrcode.react'
-import type { Product, Category, CartItem, Order, PaymentType, PreparationType, PromoCode } from '../types/database'
+import type { Product, Category, CartItem, Order, OrderStatus, PaymentType, PreparationType, PromoCode } from '../types/database'
 import { getSettings } from '../lib/settings'
 import { printInvoice } from '../utils/invoice'
 import { registerSaleMovement } from '../lib/cashflow'
 import { getOpenShift } from './_TurnoTab'
 import { calcOrderHash } from '../utils/saft'
-import { pullAll } from '../lib/sync'
-import { isSupabaseReady } from '../lib/supabase'
+import { pullAll, syncOrderStatus } from '../lib/sync'
+import { isSupabaseReady, supabase } from '../lib/supabase'
 
 const initialCategories: Category[] = [
   { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
@@ -49,6 +49,9 @@ export default function POS() {
   const [lastOrder, setLastOrder] = useState<Order | null>(null)
   const [promoInput, setPromoInput] = useState('')
   const [appliedPromo, setAppliedPromo] = useState<PromoCode | null>(null)
+  const [activeTab, setActiveTab] = useState<'pos' | 'orders'>('pos')
+  const [orders, setOrders] = useState<Order[]>([])
+  const [orderFilter, setOrderFilter] = useState<OrderStatus | 'all'>('all')
 
   useEffect(() => {
     const tryParse = (key: string, fallback: any) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback } }
@@ -56,20 +59,53 @@ export default function POS() {
       setProducts(tryParse('khrismir_products', initialProducts))
       setCategories(tryParse('khrismir_categories', initialCategories))
       setCart(tryParse('khrismir_pos_cart', []))
+      setOrders(tryParse('khrismir_orders', []))
       const banks: { id: string; name: string; type: string }[] = tryParse('cf_accounts', [])
       const bankList = banks.filter(a => a.type === 'bank')
       setBankAccounts(bankList)
       if (bankList.length > 0) setSelectedBank(bankList[0].name)
     }
     loadLocal()
-    // Sincroniza com Supabase para ter produtos/preços actualizados cross-device
-    if (isSupabaseReady()) {
-      pullAll().then(() => {
-        setProducts(tryParse('khrismir_products', initialProducts))
-        setCategories(tryParse('khrismir_categories', initialCategories))
-      })
+
+    // Sincroniza com Supabase na abertura
+    const syncAndLoad = async () => {
+      if (!isSupabaseReady()) return
+      await pullAll()
+      loadLocal()
+    }
+    syncAndLoad()
+
+    // Refresh periódico a cada 30 s — garante sync de produtos/preços/pedidos entre dispositivos
+    const interval = setInterval(async () => {
+      if (!isSupabaseReady()) return
+      await pullAll()
+      loadLocal()
+    }, 30000)
+
+    // Realtime: alterações de produtos (preço, desconto, stock) propagam imediatamente ao POS
+    let productChannel: any = null
+    if (isSupabaseReady() && supabase) {
+      productChannel = supabase
+        .channel('pos-products-realtime')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+          // Qualquer alteração em produtos → recarrega
+          pullAll().then(() => loadLocal())
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+          setOrders(tryParse('khrismir_orders', []))
+          pullAll().then(() => setOrders(tryParse('khrismir_orders', [])))
+        })
+        .subscribe()
+    }
+
+    return () => {
+      clearInterval(interval)
+      if (productChannel && supabase) supabase.removeChannel(productChannel)
     }
   }, [])
+
+  // Preço efectivo com desconto
+  const effectivePrice = (p: Product) => p.discount ? Math.round(p.price * (1 - p.discount / 100)) : p.price
 
   const saveCart = (newCart: POSCartItem[]) => {
     setCart(newCart)
@@ -108,12 +144,13 @@ export default function POS() {
       return
     }
 
-    const total = selectedProduct.price * weight
+    const unitPrice = effectivePrice(selectedProduct)
+    const total = unitPrice * weight
     const existing = cart.find(c => c.id === selectedProduct.id && c.preparation === preparation && c.weight === weight)
     if (existing) {
       saveCart(cart.map(c => c.id === selectedProduct.id && c.preparation === preparation && c.weight === weight ? { ...c, quantity: c.quantity + 1 } : c))
     } else {
-      saveCart([...cart, { ...selectedProduct, quantity: 1, weight, preparation, total_price: total } as POSCartItem])
+      saveCart([...cart, { ...selectedProduct, price: unitPrice, quantity: 1, weight, preparation, total_price: total } as POSCartItem])
     }
     setShowWeightDialog(false)
     toast.success(`${selectedProduct.name} adicionado!`)
@@ -146,11 +183,8 @@ export default function POS() {
     setAppliedPromo(code); toast.success(`Desconto ${code.discount_type === 'percentage' ? code.discount_value + '%' : code.discount_value.toLocaleString() + ' Kz'} aplicado!`)
   }
 
-  const handleCheckout = async () => {
-    if (cart.length === 0) {
-      toast.error('Carrinho vazio')
-      return
-    }
+  const handleCheckout = () => {
+    if (cart.length === 0) { toast.error('Carrinho vazio'); return }
 
     const openShift = getOpenShift()
     if (!openShift) {
@@ -158,88 +192,166 @@ export default function POS() {
       return
     }
 
-    toast.promise(
-      new Promise(resolve => setTimeout(resolve, 1500)),
-      {
-        loading: 'A processar venda...',
-        success: () => {
-          const orderNumber = `PKH-${Math.floor(10000 + Math.random() * 90000)}`
-          const now = Date.now()
+    const orderNumber = `PKH-${Math.floor(10000 + Math.random() * 90000)}`
+    const now = Date.now()
 
-          const orderBase = {
-            id: now.toString(),
-            order_number: orderNumber,
-            status: 'pronto' as const,
-            payment_type: paymentType,
-            delivery_type: 'retirada' as const,
-            subtotal: cartSubtotal,
-            discount_code: appliedPromo?.code,
-            discount_amount: discountAmount || undefined,
-            total: cartTotal,
-            items: cart.map((c, i) => ({
-              id: `${now}-${i}`,
-              order_id: now.toString(),
-              product_id: c.id,
-              product_name: c.name,
-              quantity: c.weight * c.quantity,
-              unit_price: c.price,
-              preparation: c.preparation,
-              total_price: c.weight * c.price * c.quantity
-            })),
-            created_at: new Date().toISOString(),
-          }
+    const orderBase = {
+      id: now.toString(),
+      order_number: orderNumber,
+      status: 'pronto' as const,
+      payment_type: paymentType,
+      delivery_type: 'retirada' as const,
+      subtotal: cartSubtotal,
+      discount_code: appliedPromo?.code,
+      discount_amount: discountAmount || undefined,
+      total: cartTotal,
+      items: cart.map((c, i) => ({
+        id: `${now}-${i}`,
+        order_id: now.toString(),
+        product_id: c.id,
+        product_name: c.name,
+        quantity: c.weight * c.quantity,
+        unit_price: c.price,
+        preparation: c.preparation,
+        total_price: c.weight * c.price * c.quantity,
+      })),
+      created_at: new Date().toISOString(),
+    }
 
-          // Calcular hash AGT antes de guardar
-          const newOrder: Order = { ...orderBase, hash: calcOrderHash(orderBase) }
+    const newOrder: Order = { ...orderBase, hash: calcOrderHash(orderBase) }
 
-          // Save order
-          const orders = JSON.parse(localStorage.getItem('khrismir_orders') || '[]')
-          orders.unshift(newOrder)
-          localStorage.setItem('khrismir_orders', JSON.stringify(orders))
+    const orders = JSON.parse(localStorage.getItem('khrismir_orders') || '[]')
+    orders.unshift(newOrder)
+    localStorage.setItem('khrismir_orders', JSON.stringify(orders))
 
-          // Update stock
-          const storedProducts = JSON.parse(localStorage.getItem('khrismir_products') || JSON.stringify(initialProducts))
-          cart.forEach(cartItem => {
-            const idx = storedProducts.findIndex((p: Product) => p.id === cartItem.id)
-            if (idx !== -1) {
-              storedProducts[idx].stock_quantity -= cartItem.weight * cartItem.quantity
-            }
-          })
-          localStorage.setItem('khrismir_products', JSON.stringify(storedProducts))
+    const storedProducts = JSON.parse(localStorage.getItem('khrismir_products') || JSON.stringify(initialProducts))
+    cart.forEach(cartItem => {
+      const idx = storedProducts.findIndex((p: Product) => p.id === cartItem.id)
+      if (idx !== -1) storedProducts[idx].stock_quantity -= cartItem.weight * cartItem.quantity
+    })
+    localStorage.setItem('khrismir_products', JSON.stringify(storedProducts))
 
-          // Regista no Fluxo de Caixa — para Multicaixa usa o banco escolhido
-          const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
-          registerSaleMovement(cartTotal, orderNumber, paymentType, now.toString(), bankAccount)
+    const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
+    registerSaleMovement(cartTotal, orderNumber, paymentType, now.toString(), bankAccount)
 
-          // Pontos de fidelização (1 ponto por 1000 AOA, apenas para clientes identificados)
-          if (newOrder.customer_id) {
-            const loyaltyTx = { id: Date.now().toString(), client_id: newOrder.customer_id, client_name: newOrder.customer_name || '', points: Math.floor(cartTotal / 1000), type: 'earned', order_id: newOrder.id, created_at: new Date().toISOString() }
-            const loyalty = JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]')
-            loyalty.push(loyaltyTx)
-            localStorage.setItem('khrismir_loyalty', JSON.stringify(loyalty))
-          }
+    if (newOrder.customer_id) {
+      const loyaltyTx = { id: Date.now().toString(), client_id: newOrder.customer_id, client_name: newOrder.customer_name || '', points: Math.floor(cartTotal / 1000), type: 'earned', order_id: newOrder.id, created_at: new Date().toISOString() }
+      const loyalty = JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]')
+      loyalty.push(loyaltyTx)
+      localStorage.setItem('khrismir_loyalty', JSON.stringify(loyalty))
+    }
 
-          if (appliedPromo) {
-            const promos: PromoCode[] = JSON.parse(localStorage.getItem('khrismir_promos') || '[]')
-            const pi = promos.findIndex(p => p.id === appliedPromo.id)
-            if (pi !== -1) { promos[pi].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)) }
-          }
+    if (appliedPromo) {
+      const promos: PromoCode[] = JSON.parse(localStorage.getItem('khrismir_promos') || '[]')
+      const pi = promos.findIndex(p => p.id === appliedPromo.id)
+      if (pi !== -1) { promos[pi].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)) }
+    }
 
-          saveCart([])
-          setAppliedPromo(null)
-          setPromoInput('')
-          setLastOrder(newOrder)
-          setShowReceipt(true)
+    saveCart([])
+    setAppliedPromo(null)
+    setPromoInput('')
+    setLastOrder(newOrder)
+    setShowReceipt(true)
+    toast.success(`Venda ${orderNumber} concluída!`)
 
-          return `Venda ${orderNumber} concluída!`
-        },
-        error: 'Erro ao processar venda'
-      }
-    )
+    // Abre o talão de impressão automaticamente
+    printInvoice(newOrder, settings)
   }
 
+  // ── helpers de encomendas ───────────────────────────────────
+  const statusCfg: Record<string, { label: string; color: string; next?: OrderStatus }> = {
+    pendente:   { label: 'Pendente',    color: 'bg-yellow-100 text-yellow-700', next: 'confirmado' },
+    confirmado: { label: 'Confirmado',  color: 'bg-blue-100 text-blue-700',    next: 'pronto'     },
+    pronto:     { label: 'Pronto',      color: 'bg-purple-100 text-purple-700',next: 'entregue'   },
+    entregue:   { label: 'Entregue',    color: 'bg-green-100 text-green-700'                      },
+    cancelado:  { label: 'Cancelado',   color: 'bg-red-100 text-red-600'                          },
+  }
+  const filteredOrders = orders
+    .filter(o => orderFilter === 'all' || o.status === orderFilter)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+
+  const advanceOrder = (id: string, next: OrderStatus) => {
+    const updated = orders.map(o => o.id === id ? { ...o, status: next, updated_at: new Date().toISOString() } : o)
+    setOrders(updated); localStorage.setItem('khrismir_orders', JSON.stringify(updated))
+    syncOrderStatus(id, next); toast.success(`Estado: ${statusCfg[next].label}`)
+  }
+
+  const pendingCount = orders.filter(o => o.status === 'pendente').length
+
   return (
-    <div className="flex flex-col lg:flex-row gap-6 h-[calc(100vh-140px)]">
+    <div className="flex flex-col gap-4">
+      {/* Tab bar */}
+      <div className="flex gap-2 bg-white rounded-xl shadow-sm p-1.5 w-fit">
+        <button onClick={() => setActiveTab('pos')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${activeTab === 'pos' ? 'bg-cyan-600 text-white shadow' : 'text-gray-500 hover:bg-gray-100'}`}>
+          <Receipt className="w-4 h-4" /> Caixa (POS)
+        </button>
+        <button onClick={() => setActiveTab('orders')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${activeTab === 'orders' ? 'bg-cyan-600 text-white shadow' : 'text-gray-500 hover:bg-gray-100'}`}>
+          <ShoppingBag className="w-4 h-4" /> Encomendas
+          {pendingCount > 0 && <span className="bg-red-500 text-white text-xs rounded-full px-1.5">{pendingCount}</span>}
+        </button>
+      </div>
+
+      {/* ════ TAB: ENCOMENDAS ════ */}
+      {activeTab === 'orders' && (
+        <div className="space-y-4">
+          {/* Filtros */}
+          <div className="flex gap-2 flex-wrap">
+            {(['all', 'pendente', 'confirmado', 'pronto', 'entregue', 'cancelado'] as const).map(s => (
+              <button key={s} onClick={() => setOrderFilter(s)}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold transition ${orderFilter === s ? 'bg-cyan-600 text-white' : 'bg-white text-gray-600 border hover:bg-gray-50'}`}>
+                {s === 'all' ? 'Todos' : statusCfg[s]?.label}
+                {s === 'pendente' && pendingCount > 0 && <span className="ml-1 bg-red-500 text-white text-xs rounded-full px-1">{pendingCount}</span>}
+              </button>
+            ))}
+          </div>
+
+          {filteredOrders.length === 0 ? (
+            <div className="bg-white rounded-2xl p-12 text-center shadow-sm">
+              <ShoppingBag className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+              <p className="text-gray-400">Nenhuma encomenda</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredOrders.map(order => (
+                <div key={order.id} className="bg-white rounded-2xl shadow-sm p-4 border border-gray-100">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <h4 className="font-bold text-base">{order.order_number}</h4>
+                      <p className="text-sm text-gray-500">{order.customer_name || 'Venda POS'}</p>
+                      <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5">
+                        <Clock className="w-3 h-3" /> {new Date(order.created_at).toLocaleString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${statusCfg[order.status]?.color}`}>{statusCfg[order.status]?.label}</span>
+                      <p className="font-bold text-cyan-600 text-sm mt-1">{order.total.toLocaleString()} AOA</p>
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 rounded-xl p-3 text-xs space-y-1 mb-3">
+                    {order.items?.map((item: any, i: number) => (
+                      <div key={i} className="flex justify-between text-gray-600">
+                        <span>{item.product_name} ({item.preparation}) × {Number(item.quantity).toFixed(2)}kg</span>
+                        <span>{Number(item.total_price).toLocaleString()} AOA</span>
+                      </div>
+                    ))}
+                  </div>
+                  {statusCfg[order.status]?.next && (
+                    <button onClick={() => advanceOrder(order.id, statusCfg[order.status].next!)}
+                      className="w-full bg-cyan-600 text-white py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">
+                      → {statusCfg[statusCfg[order.status].next!]?.label}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ════ TAB: POS ════ */}
+      {activeTab === 'pos' && <div className="flex flex-col lg:flex-row gap-6 h-[calc(100vh-200px)]">
       {/* Products Grid */}
       <div className="flex-1 overflow-hidden flex flex-col">
         {/* Search & Filter */}
@@ -280,7 +392,14 @@ export default function POS() {
                 🐟
               </div>
               <h3 className="font-bold text-sm truncate">{product.name}</h3>
-              <p className="text-cyan-600 font-bold">{Number(product.price).toLocaleString('pt-AO')} AOA/kg</p>
+              {product.discount ? (
+                <div>
+                  <p className="text-xs text-gray-400 line-through">{Number(product.price).toLocaleString('pt-AO')}</p>
+                  <p className="text-green-600 font-bold text-sm">{effectivePrice(product).toLocaleString('pt-AO')} AOA/kg <span className="text-xs bg-green-100 text-green-700 px-1 rounded">-{product.discount}%</span></p>
+                </div>
+              ) : (
+                <p className="text-cyan-600 font-bold">{Number(product.price).toLocaleString('pt-AO')} AOA/kg</p>
+              )}
               <p className="text-xs text-gray-500">Stock: {product.stock_quantity}kg</p>
             </button>
           ))}
@@ -454,9 +573,15 @@ export default function POS() {
 
               <div className="bg-cyan-50 p-4 rounded-lg text-center">
                 <p className="text-sm text-gray-600">Total</p>
-                <p className="text-3xl font-bold text-cyan-600">
-                  {Number(selectedProduct.price * weight).toLocaleString('pt-AO')} AOA
-                </p>
+                {selectedProduct.discount ? (
+                  <div>
+                    <p className="text-sm text-gray-400 line-through">{Number(selectedProduct.price * weight).toLocaleString('pt-AO')} AOA</p>
+                    <p className="text-3xl font-bold text-green-600">{Number(effectivePrice(selectedProduct) * weight).toLocaleString('pt-AO')} AOA</p>
+                    <p className="text-xs text-green-500">Desconto {selectedProduct.discount}% aplicado</p>
+                  </div>
+                ) : (
+                  <p className="text-3xl font-bold text-cyan-600">{Number(selectedProduct.price * weight).toLocaleString('pt-AO')} AOA</p>
+                )}
               </div>
 
               <button
@@ -472,69 +597,54 @@ export default function POS() {
 
       {/* Receipt Modal */}
       {showReceipt && lastOrder && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
-            <div className="text-center mb-6">
-              <h2 className="font-bold text-xl">✅ Venda Concluída!</h2>
-              <p className="text-gray-500">Recibo gerado com sucesso</p>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm">
+            {/* Cabeçalho */}
+            <div className="text-center mb-5">
+              <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                <span className="text-3xl">✅</span>
+              </div>
+              <h2 className="font-black text-xl text-gray-800">Venda Concluída!</h2>
+              <p className="text-gray-500 text-sm mt-1">Talão enviado para impressão</p>
             </div>
 
-            {/* Receipt */}
-            <div className="bg-white border-2 border-gray-200 rounded-lg p-4 text-sm font-mono">
-              <div className="text-center border-b pb-2 mb-2">
-                <h3 className="font-bold">{settings.name.toUpperCase()}</h3>
-                <p className="text-xs">{settings.address}</p>
-                <p className="text-xs">Tel: {settings.phone}</p>
-                <p className="text-xs">NIF: {settings.nif}</p>
+            {/* Resumo rápido */}
+            <div className="bg-gray-50 rounded-xl p-4 space-y-2 mb-5 font-mono text-sm">
+              <div className="flex justify-between font-bold text-base">
+                <span>{lastOrder.order_number}</span>
+                <span className="text-cyan-700">{Number(lastOrder.total).toLocaleString('pt-AO')} AOA</span>
               </div>
-
-              <p className="text-center font-bold my-2">RECIBO # {lastOrder.order_number}</p>
-              <p className="text-center text-xs">{new Date(lastOrder.created_at).toLocaleString('pt-AO')}</p>
-
-              <div className="border-t border-b my-2 py-2">
+              <div className="border-t pt-2 space-y-1 text-gray-600">
                 {lastOrder.items.map((item, i) => (
-                  <div key={i} className="flex justify-between">
-                    <span>{item.product_name} ({item.preparation}) x{item.quantity.toFixed(2)}kg</span>
+                  <div key={i} className="flex justify-between text-xs">
+                    <span>{item.product_name} ({item.preparation}) {Number(item.quantity).toFixed(2)}kg</span>
                     <span>{Number(item.total_price).toLocaleString('pt-AO')}</span>
                   </div>
                 ))}
               </div>
-
-              <div className="flex justify-between font-bold text-lg mt-2">
-                <span>TOTAL</span>
-                <span>{Number(lastOrder.total).toLocaleString('pt-AO')} AOA</span>
-              </div>
-
-              <p className="text-center mt-2">Pagamento: {lastOrder.payment_type}</p>
-
-              <div className="text-center mt-4">
-                <QRCodeSVG value={JSON.stringify({
-                  order: lastOrder.order_number,
-                  total: lastOrder.total,
-                  date: lastOrder.created_at,
-                  nif: '5001210092'
-                })} size={100} />
-                <p className="text-xs mt-1">Processado por software certificado</p>
+              <div className="border-t pt-2 text-xs text-gray-500 text-center">
+                {lastOrder.payment_type.charAt(0).toUpperCase() + lastOrder.payment_type.slice(1)} • {new Date(lastOrder.created_at).toLocaleTimeString('pt-AO', { hour: '2-digit', minute: '2-digit' })}
               </div>
             </div>
 
-            <div className="flex gap-2 mt-4">
+            <div className="flex gap-3">
               <button
-                onClick={() => lastOrder && printInvoice(lastOrder, settings)}
-                className="flex-1 bg-gray-100 py-2 rounded-lg font-medium flex items-center justify-center gap-2"
+                onClick={() => printInvoice(lastOrder, settings)}
+                className="flex-1 bg-gray-100 hover:bg-gray-200 py-3 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition"
               >
-                <Printer className="w-4 h-4" /> Imprimir Fatura
+                <Printer className="w-4 h-4" /> Reimprimir
               </button>
               <button
                 onClick={() => setShowReceipt(false)}
-                className="flex-1 bg-cyan-600 text-white py-2 rounded-lg font-medium"
+                className="flex-1 bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-xl font-semibold text-sm transition hover:from-green-700 hover:to-emerald-700"
               >
-                Fechar
+                Nova Venda
               </button>
             </div>
           </div>
         </div>
       )}
+      </div>} {/* fim tab POS */}
     </div>
   )
 }

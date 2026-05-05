@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { useAuthStore } from '../stores/useAuthStore'
 import type { ShiftSession } from '../types/database'
 import type { CashMovement } from './CashFlow'
+import { syncShifts } from '../lib/sync'
 
 function fmt(n: number) { return n.toLocaleString('pt-AO') + ' AOA' }
 
@@ -24,7 +25,7 @@ export function TurnoTab({ movements }: { movements: CashMovement[] }) {
   const [closeNotes, setCloseNotes] = useState('')
   const [showCloseForm, setShowCloseForm] = useState(false)
 
-  const persist = (s: ShiftSession[]) => { setShifts(s); saveShifts(s) }
+  const persist = (s: ShiftSession[]) => { setShifts(s); saveShifts(s); syncShifts(s) }
 
   const handleOpen = (e: React.FormEvent) => {
     e.preventDefault()

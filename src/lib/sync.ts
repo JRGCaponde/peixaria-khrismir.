@@ -39,10 +39,20 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     if (ord.data) {
       const fromSupabase = ord.data.map(({ order_items, ...o }: any) => ({ ...o, items: order_items ?? [] }))
       // Preservar pedidos locais que ainda não chegaram ao Supabase
+      // Filtra por id E por order_number — evita duplicados quando o mesmo pedido
+      // foi criado offline em dois dispositivos com IDs diferentes mas mesmo número
       const existing: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_orders') || '[]') } catch { return [] } })()
-      const supabaseIds = new Set(fromSupabase.map((o: any) => o.id))
-      const localOnly = existing.filter((o: any) => !supabaseIds.has(o.id))
-      lsSet('khrismir_orders', [...localOnly, ...fromSupabase])
+      const supabaseIds    = new Set(fromSupabase.map((o: any) => o.id))
+      const supabaseNumbers = new Set(fromSupabase.map((o: any) => o.order_number))
+      const localOnly = existing.filter((o: any) => !supabaseIds.has(o.id) && !supabaseNumbers.has(o.order_number))
+      // Desduplicar localOnly por order_number (limpa corrupção prévia no localStorage)
+      const seenNums = new Set<string>()
+      const cleanLocal = localOnly.filter((o: any) => {
+        if (!o.order_number || seenNums.has(o.order_number)) return false
+        seenNums.add(o.order_number)
+        return true
+      })
+      lsSet('khrismir_orders', [...cleanLocal, ...fromSupabase])
     }
     if (cf.data)     lsSet('khrismir_cashflow', cf.data)
     if (pur.data)    lsSet('khrismir_purchases', pur.data)
@@ -109,35 +119,90 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     expiry_date: p.expiry_date ?? null, created_at: p.created_at,
   })), 'Produtos')
 
-  // Encomendas — apenas colunas da tabela orders
+  // Encomendas — estratégia à prova de falhas para evitar duplicate key em order_number
   if (orders.length) {
-    const orderRows = orders.map((o: any) => ({
-      id: o.id, order_number: o.order_number,
-      customer_id: o.customer_id && UUID_REGEX.test(o.customer_id) ? o.customer_id : null,
-      customer_name: o.customer_name ?? '', customer_phone: o.customer_phone ?? '',
-      customer_nif: o.customer_nif ?? '', status: o.status ?? 'pendente',
-      payment_type: o.payment_type ?? 'dinheiro', delivery_type: o.delivery_type ?? 'retirada',
-      delivery_zone: o.delivery_zone ?? '', delivery_fee: o.delivery_fee ?? 0,
-      delivery_address: o.delivery_address ?? '', discount_code: o.discount_code ?? '',
-      discount_amount: o.discount_amount ?? 0, subtotal: o.subtotal ?? o.total ?? 0,
-      total: o.total ?? 0, notes: o.notes ?? '',
-      created_at: o.created_at, updated_at: o.updated_at,
-    }))
-    const { error: oe } = await supabase!.from('orders').upsert(orderRows, { onConflict: 'id' })
-    if (oe) { details.push(`❌ Encomendas: ${oe.message}`); ok = false }
-    else {
-      const allItems = orders.flatMap((o: any) => (o.items || []).map((i: any) => ({
-        id: i.id, order_id: o.id, product_id: i.product_id ?? '',
-        product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
-        unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
-        total_price: i.total_price ?? 0,
-      })))
-      if (allItems.length) {
-        const { error: ie } = await supabase!.from('order_items').upsert(allItems, { onConflict: 'id' })
-        if (ie) { details.push(`❌ Itens encomendas: ${ie.message}`); ok = false }
-        else details.push(`✅ Encomendas: ${orders.length} (${allItems.length} itens)`)
+    // 1. Busca TODOS os registos do Supabase (id + order_number)
+    //    Assim sabemos exactamente o que já existe antes de tentar inserir
+    const { data: sbOrders } = await supabase!
+      .from('orders')
+      .select('id, order_number')
+      .limit(5000)  // acima do normal para qualquer peixaria
+
+    const sbIdSet  = new Set<string>((sbOrders ?? []).map((r: any) => r.id))
+    const sbNumMap: Record<string, string> = {}   // order_number → id no Supabase
+    for (const r of sbOrders ?? []) sbNumMap[r.order_number] = r.id
+
+    // 2. Classificar cada ordem local:
+    //    A) id JÁ existe no Supabase                                  → UPDATE seguro (onConflict id)
+    //    B) id NÃO existe mas order_number JÁ existe com id diferente → SKIP (cópia local obsoleta)
+    //    C) id NÃO existe E order_number NÃO existe                   → INSERT novo
+    // Só enviamos A e C — nunca B (que causava o erro)
+    const toSync: any[] = []
+    const seenNum = new Set<string>()
+    const seenId  = new Set<string>()
+
+    for (const o of orders) {
+      const oid = (o as any).id
+      const onum = (o as any).order_number
+      if (!oid) continue                                    // sem id → ignora
+      if (seenId.has(oid) || seenNum.has(onum)) continue  // duplicado local → ignora
+
+      if (sbIdSet.has(oid)) {
+        // Caso A: UPDATE
+        toSync.push(o)
+        seenId.add(oid)
+        if (onum) seenNum.add(onum)
+      } else if (onum && sbNumMap[onum]) {
+        // Caso B: order_number já existe no Supabase com outro id → SKIP
+        // (não enviamos — evita o duplicate key)
+        continue
       } else {
-        details.push(`✅ Encomendas: ${orders.length}`)
+        // Caso C: INSERT genuinamente novo
+        toSync.push(o)
+        seenId.add(oid)
+        if (onum) seenNum.add(onum)
+      }
+    }
+
+    if (toSync.length === 0) {
+      details.push('✅ Encomendas: já sincronizadas')
+    } else {
+      const orderRows = toSync.map((o: any) => ({
+        id: o.id, order_number: o.order_number,
+        customer_id: o.customer_id && UUID_REGEX.test(o.customer_id) ? o.customer_id : null,
+        customer_name: o.customer_name ?? '', customer_phone: o.customer_phone ?? '',
+        customer_nif: o.customer_nif ?? '', status: o.status ?? 'pendente',
+        payment_type: o.payment_type ?? 'dinheiro', delivery_type: o.delivery_type ?? 'retirada',
+        delivery_zone: o.delivery_zone ?? '', delivery_fee: o.delivery_fee ?? 0,
+        delivery_address: o.delivery_address ?? '', discount_code: o.discount_code ?? '',
+        discount_amount: o.discount_amount ?? 0, subtotal: o.subtotal ?? o.total ?? 0,
+        total: o.total ?? 0, notes: o.notes ?? '',
+        created_at: o.created_at, updated_at: o.updated_at,
+      }))
+
+      const { error: oe } = await supabase!.from('orders').upsert(orderRows, { onConflict: 'id' })
+      if (oe) { details.push(`❌ Encomendas: ${oe.message}`); ok = false }
+      else {
+        const allItems = toSync.flatMap((o: any) => (o.items || []).map((i: any) => ({
+          id: i.id, order_id: o.id, product_id: i.product_id ?? '',
+          product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
+          unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
+          total_price: i.total_price ?? 0,
+        })))
+        if (allItems.length) {
+          // Desduplicar itens por id
+          const seenItem = new Set<string>()
+          const dedupedItems = allItems.filter((i: any) => {
+            if (!i.id || seenItem.has(i.id)) return false
+            seenItem.add(i.id)
+            return true
+          })
+          const { error: ie } = await supabase!.from('order_items').upsert(dedupedItems, { onConflict: 'id' })
+          if (ie) { details.push(`❌ Itens encomendas: ${ie.message}`); ok = false }
+          else details.push(`✅ Encomendas: ${toSync.length} (${dedupedItems.length} itens)`)
+        } else {
+          details.push(`✅ Encomendas: ${toSync.length}`)
+        }
       }
     }
   } else {
@@ -269,9 +334,18 @@ export async function syncCashFlow(entries: CashFlow[]) {
   supabase.from('cash_flow').upsert(entries, { onConflict: 'id' }).then()
 }
 
-export async function syncPurchases(purchases: Purchase[]) {
+export async function syncPurchases(purchases: any[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('purchases').upsert(purchases, { onConflict: 'id' }).then()
+  supabase.from('purchases').upsert(purchases.map(p => ({
+    id: p.id,
+    product_id: p.product_id ?? '',
+    product_name: p.product_name ?? '',
+    quantity: p.quantity ?? 0,
+    unit_price: p.unit_price ?? 0,
+    total_price: p.total_price ?? 0,
+    supplier: p.supplier ?? '',
+    created_at: p.created_at,
+  })), { onConflict: 'id' }).then()
 }
 
 export async function syncSettings(settings: StoreSettings) {
@@ -327,6 +401,34 @@ export async function deleteZone(id: string) {
 export async function deletePromo(id: string) {
   if (!isSupabaseReady() || !supabase) return
   supabase.from('promo_codes').delete().eq('id', id).then()
+}
+
+/**
+ * Apaga TODOS os dados de negócio do Supabase.
+ * Usa a função SQL reset_all_data() com SECURITY DEFINER para bypassar o RLS.
+ * Fallback: delete directo tabela a tabela (menos fiável com RLS activo).
+ */
+export async function clearAllData(): Promise<void> {
+  if (!isSupabaseReady() || !supabase) return
+
+  // Tentativa 1: RPC com SECURITY DEFINER — bypassa RLS, apaga tudo garantidamente
+  try {
+    const { error } = await supabase.rpc('reset_all_data')
+    if (!error) return   // sucesso — sai imediatamente
+    console.warn('[clearAllData] RPC falhou:', error.message)
+  } catch (e: any) {
+    console.warn('[clearAllData] RPC exception:', e?.message)
+  }
+
+  // Fallback: delete directo (pode ser bloqueado por RLS mas tenta na mesma)
+  const tables = [
+    'order_items', 'orders', 'products', 'categories',
+    'cash_flow', 'purchases', 'delivery_zones', 'promo_codes',
+    'suppliers', 'returns', 'loyalty_transactions', 'shift_sessions',
+  ]
+  for (const table of tables) {
+    try { await supabase.from(table).delete().not('id', 'is', null) } catch { }
+  }
 }
 
 // ── NOTIFICAÇÃO DE NOVA ENCOMENDA com retry ────────────────────
