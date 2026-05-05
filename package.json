@@ -14,7 +14,9 @@
     "preview": "vite preview",
     "electron:dev": "NODE_ENV=development electron .",
     "electron:build": "vite build && node build-app.mjs",
-    "electron:pack": "node build-app.mjs"
+    "electron:pack": "node build-app.mjs",
+    "deploy:web": "npm run build:web && npx vercel deploy --prod --yes",
+    "deploy:all": "node deploy-all.mjs"
   },
   "build": {
     "appId": "ao.khrismir.peixaria",
