@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { Clock, CheckCircle, XCircle, Package, Truck, ChefHat, MessageCircle, Printer, RefreshCw } from 'lucide-react'
 import { useAuthStore } from '../stores/useAuthStore'
 import { getSettings } from '../lib/settings'
-import { printInvoice } from '../utils/invoice'
+import { printInvoice, printBusinessInvoice } from '../utils/invoice'
+import { printReceipt } from '../utils/receipt'
 import type { Order, OrderStatus } from '../types/database'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { pullAll } from '../lib/sync'
@@ -139,9 +140,17 @@ export default function Orders() {
                     <p>Pagamento: {order.payment_type}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
+                    <button onClick={() => printReceipt(order, settings)}
+                      className="flex items-center gap-2 px-3 py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition">
+                      <Printer className="w-4 h-4" /> Talão
+                    </button>
                     <button onClick={() => printInvoice(order, settings)}
-                      className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition">
-                      <Printer className="w-4 h-4" /> Fatura
+                      className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 rounded-xl text-sm font-medium hover:bg-blue-100 transition">
+                      <Printer className="w-4 h-4" /> A4
+                    </button>
+                    <button onClick={() => printBusinessInvoice(order, settings)}
+                      className="flex items-center gap-2 px-3 py-2 bg-amber-50 text-amber-700 rounded-xl text-sm font-medium hover:bg-amber-100 transition">
+                      <Printer className="w-4 h-4" /> Fatura AGT
                     </button>
                     {order.status !== 'entregue' && order.status !== 'cancelado' && (
                       <a href={getWhatsAppLink(order)} target="_blank" rel="noopener noreferrer"

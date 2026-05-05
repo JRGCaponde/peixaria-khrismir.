@@ -10,6 +10,13 @@ export interface StoreSettings {
   delivery_enabled: boolean
   min_order_delivery: number
   opening_hours: string
+  // Dados fiscais/empresa
+  capital_social?: string
+  cons_reg_com?: string
+  // Dados bancários (para facturas)
+  bank_name?: string
+  bank_account?: string
+  bank_iban?: string
 }
 
 export const DEFAULT_SETTINGS: StoreSettings = {
@@ -23,6 +30,11 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   delivery_enabled: true,
   min_order_delivery: 0,
   opening_hours: 'Seg–Sáb: 07:00–18:00',
+  capital_social: '',
+  cons_reg_com: '',
+  bank_name: '',
+  bank_account: '',
+  bank_iban: '',
 }
 
 export function getSettings(): StoreSettings {

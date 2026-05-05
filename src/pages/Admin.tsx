@@ -1750,6 +1750,48 @@ function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s
               min="0" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
           </div>
         </div>
+
+        {/* Dados Fiscais */}
+        <div className="border-t pt-5">
+          <h3 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
+            <span className="w-2 h-2 bg-amber-500 rounded-full inline-block" /> Dados Fiscais (para Facturas AGT)
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[
+              { field: 'capital_social', label: 'Capital Social', placeholder: 'Ex: 10.000.000,00 AKZ' },
+              { field: 'cons_reg_com',   label: 'Cons. Reg. Com.', placeholder: 'Ex: 001-01012020-LUA' },
+            ].map(({ field, label, placeholder }) => (
+              <div key={field}>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+                <input type="text" value={(form as any)[field] ?? ''} placeholder={placeholder}
+                  onChange={e => setForm(f => ({ ...f, [field]: e.target.value }))}
+                  className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-amber-400" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Dados Bancários */}
+        <div className="border-t pt-5">
+          <h3 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2">
+            <span className="w-2 h-2 bg-blue-500 rounded-full inline-block" /> Dados Bancários (aparecem na Fatura)
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {[
+              { field: 'bank_name',    label: 'Banco',         placeholder: 'Ex: BAI' },
+              { field: 'bank_account', label: 'N.º de Conta',  placeholder: 'Ex: 123456789' },
+              { field: 'bank_iban',    label: 'IBAN',          placeholder: 'Ex: AO06.0040...' },
+            ].map(({ field, label, placeholder }) => (
+              <div key={field}>
+                <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+                <input type="text" value={(form as any)[field] ?? ''} placeholder={placeholder}
+                  onChange={e => setForm(f => ({ ...f, [field]: e.target.value }))}
+                  className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-blue-400" />
+              </div>
+            ))}
+          </div>
+        </div>
+
         <button type="submit" className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 text-white py-3 rounded-xl font-bold hover:from-cyan-700 hover:to-blue-700 transition">
           Guardar Configurações
         </button>
