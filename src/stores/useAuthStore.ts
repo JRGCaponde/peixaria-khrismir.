@@ -9,7 +9,7 @@ interface User {
   email: string
   full_name: string
   phone?: string
-  role: 'admin' | 'employee' | 'gerente' | 'client'
+  role: 'admin' | 'employee' | 'gerente' | 'client' | 'super_admin'
   access_areas?: string[]   // tabs que o gerente pode aceder
   created_at: string
 }
@@ -22,7 +22,7 @@ interface AuthState {
   requestReset: (email: string) => string | null
   resetPassword: (email: string, newPassword: string, code: string) => boolean
   initSupabaseSession: () => Promise<void>
-  createUser: (email: string, password: string, fullName: string, phone: string, role: 'employee' | 'admin' | 'gerente' | 'client', access_areas?: string[]) => Promise<{ ok: boolean; supabaseId?: string; error?: string }>
+  createUser: (email: string, password: string, fullName: string, phone: string, role: 'employee' | 'admin' | 'gerente' | 'client' | 'super_admin', access_areas?: string[]) => Promise<{ ok: boolean; supabaseId?: string; error?: string }>
 }
 
 // ── Bloqueio de tentativas (local) ─────────────────────────────
@@ -78,6 +78,17 @@ export const useAuthStore = create<AuthState>()(
           const u: User = { id: session.user.id, email: session.user.email!, full_name: profile.full_name, phone: profile.phone, role: profile.role, access_areas: profile.access_areas, created_at: profile.created_at }
           set({ user: u, isAuthenticated: true })
           startPresenceTracking(u)
+          // Auto-definir a loja activa a partir do perfil (resolve getCurrentStoreId() null)
+          if (profile.store_id) {
+            try {
+              const existing = JSON.parse(localStorage.getItem('khrismir_current_store') || 'null')
+              if (!existing || existing.id !== profile.store_id) {
+                const { data: storeData } = await supabase.from('stores').select('*').eq('id', profile.store_id).maybeSingle()
+                const storeObj = storeData ?? { id: profile.store_id, name: 'Loja Khrismir' }
+                localStorage.setItem('khrismir_current_store', JSON.stringify(storeObj))
+              }
+            } catch { /* non-fatal */ }
+          }
         }
       },
 
@@ -103,11 +114,57 @@ export const useAuthStore = create<AuthState>()(
         if (isSupabaseReady() && supabase) {
           const { data, error } = await supabase.auth.signInWithPassword({ email, password })
           if (!error && data.session) {
-            const { data: profile } = await supabase.from('profiles').select('*').eq('id', data.user.id).maybeSingle()
+            let { data: profile } = await supabase.from('profiles').select('*').eq('id', data.user.id).maybeSingle()
+
+            // Se não encontrou perfil via RLS, tenta via service (bypass)
+            if (!profile) {
+              const { data: p2 } = await supabase
+                .from('profiles').select('*').eq('email', data.user.email!).maybeSingle()
+              if (p2) profile = p2
+            }
+
+            // Se ainda não tem perfil, cria um automaticamente (INSERT nunca sobrescreve role existente)
+            if (!profile) {
+              const newProfile = {
+                id: data.user.id,
+                email: data.user.email!,
+                full_name: data.user.user_metadata?.full_name ?? data.user.email!,
+                role: 'client' as const,
+                created_at: new Date().toISOString(),
+              }
+              const { error: insertErr } = await supabase.from('profiles').insert(newProfile)
+              if (insertErr) {
+                // Perfil já existe mas o SELECT falhou (ex: RLS transitória) — tentar novamente
+                const { data: p3 } = await supabase.from('profiles').select('*').eq('id', data.user.id).maybeSingle()
+                profile = p3 ?? newProfile
+              } else {
+                profile = newProfile
+              }
+            }
+
             clearAttempts(email)
-            const u: User = { id: data.user.id, email: data.user.email!, full_name: profile?.full_name ?? data.user.email!, phone: profile?.phone, role: profile?.role ?? 'client', access_areas: profile?.access_areas, created_at: profile?.created_at ?? new Date().toISOString() }
+            const u: User = {
+              id: data.user.id,
+              email: data.user.email!,
+              full_name: profile?.full_name ?? data.user.email!,
+              phone: profile?.phone,
+              role: profile?.role ?? 'client',
+              access_areas: profile?.access_areas,
+              created_at: profile?.created_at ?? new Date().toISOString(),
+            }
             set({ user: u, isAuthenticated: true })
             startPresenceTracking(u)
+            // Auto-definir a loja activa a partir do perfil (resolve getCurrentStoreId() null)
+            if (profile?.store_id) {
+              try {
+                const existing = JSON.parse(localStorage.getItem('khrismir_current_store') || 'null')
+                if (!existing || existing.id !== profile.store_id) {
+                  const { data: storeData } = await supabase!.from('stores').select('*').eq('id', profile.store_id).maybeSingle()
+                  const storeObj = storeData ?? { id: profile.store_id, name: 'Loja Khrismir' }
+                  localStorage.setItem('khrismir_current_store', JSON.stringify(storeObj))
+                }
+              } catch { /* non-fatal */ }
+            }
             return { ok: true }
           }
           // Supabase falhou — tentar localStorage como fallback (utilizadores locais: admin, funcionários)

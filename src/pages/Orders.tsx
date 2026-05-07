@@ -5,7 +5,6 @@ import { getSettings } from '../lib/settings'
 import { printInvoice, printBusinessInvoice } from '../utils/invoice'
 import { printReceipt } from '../utils/receipt'
 import type { Order, OrderStatus } from '../types/database'
-import { supabase, isSupabaseReady } from '../lib/supabase'
 import { pullAll } from '../lib/sync'
 
 const statusConfig: Record<OrderStatus, { label: string; color: string; icon: React.ElementType }> = {
@@ -44,21 +43,15 @@ export default function Orders() {
     loadFromStorage()
     refresh()
 
-    // Subscrição Realtime — o estado do pedido actualiza automaticamente
-    if (!isSupabaseReady() || !supabase) return
-    const channel = supabase
-      .channel('orders-realtime')
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, payload => {
-        setOrders(prev => prev.map(o =>
-          o.id === payload.new.id ? { ...o, status: payload.new.status as OrderStatus, updated_at: payload.new.updated_at } : o
-        ))
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, () => {
-        refresh()
-      })
-      .subscribe()
+    // Realtime global (realtime.ts): o localStorage é actualizado automaticamente
+    // quando qualquer dispositivo altera encomendas — só precisamos de recarregar
+    const handleSync = (e: Event) => {
+      const table = (e as CustomEvent).detail?.table
+      if (!table || table === 'orders') loadFromStorage()
+    }
+    window.addEventListener('khrismir:sync', handleSync)
 
-    return () => { supabase.removeChannel(channel) }
+    return () => window.removeEventListener('khrismir:sync', handleSync)
   }, [user])
 
   const filtered = orders.filter(o => filter === 'all' || o.status === filter)

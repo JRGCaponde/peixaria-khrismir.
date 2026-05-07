@@ -1,11 +1,13 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/useAuthStore'
-import { Fish, User, LogOut, Menu, X, Bell } from 'lucide-react'
+import { Fish, User, LogOut, Menu, X, Bell, Store, ChevronDown } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { getPendingOrderCount, startOrderPolling, requestNotificationPermission } from '../lib/notifications'
+import { useStore } from '../lib/storeContext'
 
 export default function Header() {
   const { user, isAuthenticated, logout } = useAuthStore()
+  const { store, clearStore } = useStore()
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [pendingOrders, setPendingOrders] = useState(0)
@@ -22,6 +24,7 @@ export default function Header() {
 
   const handleLogout = () => {
     logout()
+    clearStore()
     localStorage.removeItem('khrismir_cart')
     localStorage.removeItem('khrismir_pos_cart')
     navigate('/')
@@ -37,8 +40,12 @@ export default function Header() {
               <Fish className="w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-xl md:text-2xl font-bold">Peixaria Khrismir</h1>
-              <p className="text-xs text-cyan-100">Frescor do Mar à sua Mesa</p>
+              <h1 className="text-xl md:text-2xl font-bold">
+                {store?.name ?? 'Peixaria Khrismir'}
+              </h1>
+              <p className="text-xs text-cyan-100">
+                {store ? `NIF: ${store.nif || '—'}` : 'Frescor do Mar à sua Mesa'}
+              </p>
             </div>
           </Link>
 
@@ -69,6 +76,18 @@ export default function Header() {
                       <Bell className="w-5 h-5" />
                       <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-black rounded-full w-4 h-4 flex items-center justify-center">{pendingOrders > 9 ? '9+' : pendingOrders}</span>
                     </Link>
+                  )}
+                  {/* Botão mudar loja (super_admin ou staff com acesso a múltiplas lojas) */}
+                  {store && user?.role !== 'client' && (
+                    <button
+                      onClick={() => { clearStore(); navigate('/') }}
+                      className="flex items-center gap-1.5 bg-white/20 hover:bg-white/30 px-2.5 py-1.5 rounded-lg text-xs transition"
+                      title="Mudar de loja"
+                    >
+                      <Store className="w-3.5 h-3.5" />
+                      <span className="hidden lg:inline max-w-24 truncate">{store.name}</span>
+                      <ChevronDown className="w-3 h-3 opacity-70" />
+                    </button>
                   )}
                   <User className="w-4 h-4" />
                   <span className="text-sm">{user?.full_name}</span>

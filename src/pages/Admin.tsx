@@ -12,18 +12,21 @@ import {
   Receipt, MessageCircle, Download, Clock, ShoppingBag,
   Settings, MapPin, Tag, UserCheck, Printer, Truck, RotateCcw,
   Star, CalendarDays, AlertTriangle, QrCode, Share2, X, DollarSign, Monitor, FileBarChart2,
+  Store, CheckCircle, XCircle, Building2, Save,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, DeliveryZone, PromoCode, Supplier, Return, LoyaltyTransaction } from '../types/database'
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
 import { printInvoice } from '../utils/invoice'
 import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport } from '../utils/reports'
+import { getLastBackupMeta, restoreLocalBackup, type BackupMeta } from '../lib/autoBackup'
 import { registerPurchaseMovement, getCashFlowSummary, syncAllData, migrateExistingData } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
   syncProducts, syncCategories, syncDeliveryZones, syncPromos, syncSettings,
   syncPurchases, clearAllData,
   deleteProduct, deleteCategory, deleteZone, deletePromo,
+  syncStore,
 } from '../lib/sync'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
@@ -31,7 +34,7 @@ import { generateSAFTXML, downloadSAFT } from '../utils/saft'
 import { useAuthStore } from '../stores/useAuthStore'
 import { subscribePresence, type OnlineUser } from '../lib/presence'
 
-type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system' | 'sessions'
+type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system' | 'sessions' | 'reports' | 'stores'
 
 const statusConfig: Record<OrderStatus, { label: string; color: string; next?: OrderStatus }> = {
   pendente:   { label: 'Pendente',   color: 'bg-yellow-100 text-yellow-800',  next: 'confirmado' },
@@ -101,7 +104,7 @@ export default function Admin() {
     }
     loadAll()
 
-    // Sincronização automática: puxa do Supabase e empurra dados locais na primeira abertura
+    // ── Sincronização inicial ─────────────────────────────────
     const autoSync = async () => {
       await pullAll()
       loadAll()
@@ -116,7 +119,6 @@ export default function Admin() {
             const erros = result.details.filter(d => d.startsWith('❌'))
             const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
             toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
-            console.warn('[autoSync]', result.details)
           }
         } else {
           pushAll()
@@ -125,21 +127,28 @@ export default function Admin() {
     }
     autoSync()
 
-    // ── Realtime: novas encomendas dos clientes web ───────────
-    if (!isSupabaseReady() || !supabase) return
+    // ── Listener do Realtime global (realtime.ts) ─────────────
+    // Sempre que QUALQUER tabela mudar num QUALQUER dispositivo,
+    // o realtime.ts actualiza o localStorage e dispara este evento.
+    const handleSync = () => loadAll()
+    window.addEventListener('khrismir:sync', handleSync)
+
+    // ── Canal de notificações de encomendas (toast + som) ─────
+    // Separado do sync de dados — só para alertas visuais/sonoros
+    if (!isSupabaseReady() || !supabase) {
+      return () => window.removeEventListener('khrismir:sync', handleSync)
+    }
 
     const notifiedIds = new Set<string>()
     let channelRef: ReturnType<typeof supabase.channel> | null = null
 
-    const subscribeOrders = () => {
+    const subscribeNotifications = () => {
       if (channelRef) supabase!.removeChannel(channelRef)
-
       channelRef = supabase!
-        .channel('admin-orders-main')
+        .channel('admin-notifications')
         .on('broadcast', { event: 'new_order' }, ({ payload }) => {
           if (!payload?.id || notifiedIds.has(payload.id)) return
           notifiedIds.add(payload.id)
-          setTimeout(() => pullAll().then(() => loadAll()), 600)
           playNotificationSound()
           toast(`🛒 Nova encomenda: ${payload.order_number}`, {
             description: `${payload.customer_name || 'Cliente'} • ${(payload.total || 0).toLocaleString()} AOA`,
@@ -148,44 +157,32 @@ export default function Admin() {
           })
         })
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, payload => {
-          const newOrder = { ...(payload.new as Order), items: [] }
-          if (notifiedIds.has(newOrder.id)) return
-          setOrders(prev => {
-            if (prev.some(o => o.id === newOrder.id)) return prev
-            const updated = [newOrder, ...prev]
-            localStorage.setItem('khrismir_orders', JSON.stringify(updated))
-            return updated
-          })
-          notifiedIds.add(newOrder.id)
+          const o = payload.new as Order
+          if (notifiedIds.has(o.id)) return
+          notifiedIds.add(o.id)
           playNotificationSound()
-          toast(`🛒 Nova encomenda: ${(payload.new as Order).order_number}`, {
-            description: `${(payload.new as Order).customer_name || 'Cliente'} • ${((payload.new as Order).total || 0).toLocaleString()} AOA`,
+          toast(`🛒 Nova encomenda: ${o.order_number}`, {
+            description: `${o.customer_name || 'Cliente'} • ${(o.total || 0).toLocaleString()} AOA`,
             duration: 8000,
             action: { label: 'Ver', onClick: () => setActiveTab('orders') },
           })
-        })
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' }, payload => {
-          const updated = payload.new as Order
-          setOrders(prev => {
-            const next = prev.map(o => o.id === updated.id ? { ...o, status: updated.status, updated_at: updated.updated_at } : o)
-            localStorage.setItem('khrismir_orders', JSON.stringify(next))
-            return next
-          })
+          // O realtime.ts já actualizou o localStorage e disparou khrismir:sync
+          // loadAll() será chamado pelo handleSync acima
         })
         .subscribe(status => {
-          // Reconecta automaticamente se o canal cair
           if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            setTimeout(subscribeOrders, 3000)
+            setTimeout(subscribeNotifications, 3000)
           }
         })
     }
 
-    subscribeOrders()
+    subscribeNotifications()
 
-    // Refresh periódico a cada 20 s como fallback — garante sync mesmo sem Realtime
-    const interval = setInterval(() => pullAll().then(() => loadAll()), 20000)
+    // Fallback: pull a cada 2 minutos (caso WebSocket caia)
+    const interval = setInterval(() => pullAll().then(loadAll), 120000)
 
     return () => {
+      window.removeEventListener('khrismir:sync', handleSync)
       if (channelRef) supabase!.removeChannel(channelRef)
       clearInterval(interval)
     }
@@ -223,6 +220,7 @@ export default function Admin() {
     { id: 'system',     label: 'Sistema',       icon: Database                     },
     { id: 'reports',    label: 'Relatórios',    icon: FileBarChart2                },
     { id: 'sessions',   label: 'Sessões Online', icon: Monitor, adminOnly: true    },
+    { id: 'stores',     label: 'Lojas',          icon: Store,   adminOnly: true    },
   ]
 
   // Filtra tabs: admin vê tudo, gerente vê só as áreas autorizadas (+ sessões excluído)
@@ -275,6 +273,7 @@ export default function Admin() {
         {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
         {activeTab === 'reports'    && <ReportsTab orders={orders} purchases={purchases} storeSettings={storeSettings} />}
         {activeTab === 'sessions'   && <SessionsTab />}
+        {activeTab === 'stores'     && <StoresTab />}
       </div>
     </div>
   )
@@ -1414,7 +1413,7 @@ function DeliveryTab() {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-bold text-cyan-600">{z.price === 0 ? 'Grátis' : `${z.price.toLocaleString()} Kz`}</span>
-                  <button onClick={() => persist(zones.filter(x => x.id !== z.id))} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                  <button onClick={() => { persist(zones.filter(x => x.id !== z.id)); deleteZone(z.id) }} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                 </div>
               </div>
             ))}
@@ -1545,7 +1544,7 @@ function PromosTab() {
 function AGTTab({ orders, storeSettings, purchases }: { orders: Order[]; storeSettings: StoreSettings; purchases: Purchase[] }) {
   const ivaRate = storeSettings.iva_rate / 100
   const totalFaturado = orders.filter(o => o.status !== 'cancelado').reduce((s, o) => s + o.total, 0)
-  const totalIVA = totalFaturado * ivaRate
+  const _totalIVA = totalFaturado * ivaRate; void _totalIVA
 
   const [saftYear, setSaftYear] = useState(new Date().getFullYear())
 
@@ -1919,7 +1918,7 @@ function ReportsTab({ orders, purchases, storeSettings }: { orders: Order[]; pur
             </div>
             <button onClick={() => {
               const [y, m] = moMonth.split('-').map(Number)
-              printMonthlyReport(orders, purchases, cashFlow, storeSettings, y, m)
+              printMonthlyReport(orders, purchases, storeSettings, y, m)
             }}
               className="flex items-center gap-2 bg-purple-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-purple-700 transition">
               <Download className="w-4 h-4" /> PDF
@@ -2032,7 +2031,50 @@ function SessionsTab() {
 
 /* ─── SISTEMA ─── */
 function SystemTab({ products, categories }: { products: Product[]; categories: Category[] }) {
-  const [syncing, setSyncing] = useState(false)
+  const [syncing,      setSyncing]      = useState(false)
+  const [backupMeta,   setBackupMeta]   = useState<BackupMeta | null>(getLastBackupMeta)
+  const [backingUp,    setBackingUp]    = useState(false)
+  const [deploying,    setDeploying]    = useState(false)
+  const [deployLogs,   setDeployLogs]   = useState<string[]>([])
+  const [deployResult, setDeployResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const logsEndRef = useRef<HTMLDivElement>(null)
+
+  const isElectron = !!(window as any).electronAPI?.isElectron
+
+  // Scroll automático nos logs de deploy
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [deployLogs])
+
+  const handleBackupNow = async () => {
+    setBackingUp(true)
+    // Faz push completo para Supabase (o Realtime notifica os outros dispositivos)
+    await pushAll()
+    setBackupMeta(getLastBackupMeta())
+    setBackingUp(false)
+    toast.success('✅ Dados enviados para a cloud!')
+  }
+
+  const handleRestoreLocalBackup = () => {
+    if (!backupMeta) { toast.error('Sem backup automático disponível'); return }
+    if (!confirm(`Restaurar backup de ${new Date(backupMeta.timestamp).toLocaleString('pt-AO')}?\nOs dados actuais serão substituídos.`)) return
+    const ok = restoreLocalBackup()
+    if (ok) { toast.success('✅ Backup restaurado localmente!'); setTimeout(() => window.location.reload(), 1200) }
+    else toast.error('Falha ao restaurar backup')
+  }
+
+  const handleDeployAll = async () => {
+    if (!isElectron) return
+    setDeploying(true)
+    setDeployLogs([])
+    setDeployResult(null)
+
+    const api = (window as any).electronAPI
+    api.onDeployLog((msg: string) => setDeployLogs(prev => [...prev, msg]))
+    const result = await api.deployAll()
+    setDeployResult(result)
+    setDeploying(false)
+  }
 
   const syncAll = async () => {
     setSyncing(true)
@@ -2201,9 +2243,86 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
   }
 
   return (
-    <div className="bg-white rounded-2xl p-6 shadow-sm border-t-4 border-gray-800 max-w-2xl">
-      <h2 className="text-xl font-bold mb-6">Configurações de Sistema</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+    <div className="bg-white rounded-2xl p-6 shadow-sm border-t-4 border-gray-800 max-w-2xl space-y-5">
+      <h2 className="text-xl font-bold">Configurações de Sistema</h2>
+
+      {/* ── Backup Automático ──────────────────────────────── */}
+      <div className="p-4 border-2 border-cyan-200 rounded-2xl bg-cyan-50/40 space-y-3">
+        <div className="flex items-start justify-between flex-wrap gap-2">
+          <div>
+            <h4 className="font-bold text-cyan-800 flex items-center gap-2">
+              <RotateCcw className="w-4 h-4" /> Backup Automático (30 em 30 min)
+            </h4>
+            <p className="text-xs text-cyan-600 mt-0.5">
+              Guarda snapshot local → envia para Supabase → importa dados actualizados da cloud.
+            </p>
+          </div>
+          <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700">● Activo</span>
+        </div>
+
+        {backupMeta && (
+          <div className="text-xs text-cyan-700 bg-white/70 rounded-xl px-3 py-2 border border-cyan-100">
+            <span className="font-bold">Último backup:</span>{' '}
+            {new Date(backupMeta.timestamp).toLocaleString('pt-AO')}{' '}
+            &nbsp;•&nbsp; {backupMeta.keys} tabelas{' '}
+            &nbsp;•&nbsp; {(backupMeta.size / 1024).toFixed(1)} KB
+          </div>
+        )}
+        {!backupMeta && (
+          <p className="text-xs text-cyan-500 italic">Ainda sem backup automático nesta sessão.</p>
+        )}
+
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={handleBackupNow} disabled={backingUp}
+            className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition disabled:opacity-60">
+            <RotateCcw className={`w-4 h-4 ${backingUp ? 'animate-spin' : ''}`} />
+            {backingUp ? 'A fazer backup…' : 'Fazer Backup Agora'}
+          </button>
+          <button onClick={handleRestoreLocalBackup} disabled={!backupMeta}
+            className="flex items-center gap-2 bg-white border-2 border-cyan-300 text-cyan-700 px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-50 transition disabled:opacity-40">
+            <Upload className="w-4 h-4" /> Restaurar Último Backup
+          </button>
+        </div>
+      </div>
+
+      {/* ── Deploy Completo (apenas Electron) ─────────────── */}
+      {isElectron && (
+        <div className="p-4 border-2 border-purple-200 rounded-2xl bg-purple-50/40 space-y-3">
+          <div>
+            <h4 className="font-bold text-purple-800 flex items-center gap-2">
+              <Monitor className="w-4 h-4" /> Deploy Completo (Browser + Electron)
+            </h4>
+            <p className="text-xs text-purple-600 mt-0.5">
+              Equivale a <code className="bg-purple-100 px-1 rounded">npm run deploy:all</code> — compila e publica browser (Vercel) e actualiza o executável Electron.
+            </p>
+          </div>
+
+          <button onClick={handleDeployAll} disabled={deploying}
+            className="flex items-center gap-2 bg-purple-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold hover:bg-purple-700 transition disabled:opacity-60">
+            <RotateCcw className={`w-4 h-4 ${deploying ? 'animate-spin' : ''}`} />
+            {deploying ? 'A fazer deploy…' : '🚀 Deploy Completo Agora'}
+          </button>
+
+          {deployLogs.length > 0 && (
+            <div className="bg-gray-900 text-green-400 rounded-xl p-3 font-mono text-xs max-h-48 overflow-y-auto space-y-0.5">
+              {deployLogs.map((line, i) => (
+                <div key={i} className={line.startsWith('❌') || line.startsWith('⚠') ? 'text-red-400' : line.startsWith('✅') ? 'text-green-300 font-bold' : ''}>
+                  {line}
+                </div>
+              ))}
+              <div ref={logsEndRef} />
+            </div>
+          )}
+
+          {deployResult && (
+            <div className={`text-sm font-bold px-3 py-2 rounded-xl ${deployResult.ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+              {deployResult.message}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="p-4 border rounded-2xl space-y-4">
           <div>
             <h4 className="font-bold mb-1">Base de Dados Local</h4>
@@ -2567,7 +2686,7 @@ function CalendarTab({ orders }: { orders: Order[] }) {
   const [year, month] = selectedDate.split('-').map(Number)
   const firstDay = new Date(year, month - 1, 1).getDay()
   const daysInMonth = new Date(year, month, 0).getDate()
-  const calDays = Array.from({ length: firstDay }, () => null).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1))
+  const calDays = (Array.from({ length: firstDay }, () => null) as (number | null)[]).concat(Array.from({ length: daysInMonth }, (_, i) => i + 1))
 
   const prevMonth = () => { const d = new Date(year, month - 2, 1); setSelectedDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`) }
   const nextMonth = () => { const d = new Date(year, month, 1); setSelectedDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`) }
@@ -2627,6 +2746,197 @@ function CalendarTab({ orders }: { orders: Order[] }) {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/* ─── GESTÃO DE LOJAS (super_admin) ─── */
+interface StoreForm {
+  id?: string; name: string; slug: string; address: string; phone: string
+  email: string; whatsapp: string; nif: string; iva_rate: string; active: boolean
+}
+const EMPTY_STORE_FORM: StoreForm = {
+  name: '', slug: '', address: '', phone: '', email: '', whatsapp: '', nif: '', iva_rate: '14', active: true,
+}
+
+function StoresTab() {
+  const [stores, setStores]       = useState<any[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [form, setForm]           = useState<StoreForm>(EMPTY_STORE_FORM)
+  const [saving, setSaving]       = useState(false)
+  const [search, setSearch]       = useState('')
+
+  const loadStores = async () => {
+    setLoading(true)
+    if (!isSupabaseReady() || !supabase) {
+      const local: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_stores') || '[]') } catch { return [] } })()
+      setStores(local); setLoading(false); return
+    }
+    const { data } = await supabase.from('stores').select('*').order('name')
+    if (data) { setStores(data); localStorage.setItem('khrismir_stores', JSON.stringify(data)) }
+    setLoading(false)
+  }
+
+  useEffect(() => {
+    loadStores()
+    const handleSync = (e: Event) => {
+      const t = (e as CustomEvent).detail?.table
+      if (!t || t === 'stores') loadStores()
+    }
+    window.addEventListener('khrismir:sync', handleSync)
+    return () => window.removeEventListener('khrismir:sync', handleSync)
+  }, [])
+
+  const openNew  = () => { setForm(EMPTY_STORE_FORM); setShowModal(true) }
+  const openEdit = (s: any) => {
+    setForm({ id: s.id, name: s.name ?? '', slug: s.slug ?? '', address: s.address ?? '',
+      phone: s.phone ?? '', email: s.email ?? '', whatsapp: s.whatsapp ?? '',
+      nif: s.nif ?? '', iva_rate: String(s.iva_rate ?? 14), active: s.active !== false })
+    setShowModal(true)
+  }
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { toast.error('Nome da loja é obrigatório'); return }
+    setSaving(true)
+    const result = await syncStore({
+      id: form.id, name: form.name.trim(),
+      slug: form.slug.trim() || form.name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+      address: form.address, phone: form.phone, email: form.email, whatsapp: form.whatsapp,
+      nif: form.nif, iva_rate: parseFloat(form.iva_rate) || 14, active: form.active,
+    })
+    setSaving(false)
+    if (!result) { toast.error('Erro ao guardar loja'); return }
+    toast.success(form.id ? 'Loja actualizada!' : `Loja "${form.name}" criada!`)
+    setShowModal(false); loadStores()
+  }
+
+  const handleToggleActive = async (s: any) => {
+    if (!confirm(s.active ? `Desactivar "${s.name}"?` : `Activar "${s.name}"?`)) return
+    await syncStore({ ...s, active: !s.active })
+    toast.success(s.active ? 'Loja desactivada' : 'Loja activada')
+    loadStores()
+  }
+
+  const fld = (k: keyof StoreForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setForm(p => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
+
+  const filtered = stores.filter(s =>
+    (s.name ?? '').toLowerCase().includes(search.toLowerCase()) ||
+    (s.nif ?? '').includes(search) ||
+    (s.address ?? '').toLowerCase().includes(search.toLowerCase())
+  )
+
+  const fields: { label: string; key: keyof StoreForm; placeholder: string }[] = [
+    { label: 'Nome da Loja *', key: 'name',     placeholder: 'Ex: Peixaria Central' },
+    { label: 'Slug (URL)',     key: 'slug',     placeholder: 'peixaria-central'      },
+    { label: 'Morada',        key: 'address',  placeholder: 'Rua, Cidade'           },
+    { label: 'Telefone',      key: 'phone',    placeholder: '+244 9XX XXX XXX'      },
+    { label: 'Email',         key: 'email',    placeholder: 'loja@exemplo.ao'       },
+    { label: 'WhatsApp',      key: 'whatsapp', placeholder: '244900000000'          },
+    { label: 'NIF',           key: 'nif',      placeholder: '5001234567'            },
+    { label: 'Taxa IVA (%)',  key: 'iva_rate', placeholder: '14'                    },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h3 className="text-2xl font-bold text-gray-900">Gestão de Lojas</h3>
+          <p className="text-gray-500 text-sm mt-0.5">{stores.length} loja{stores.length !== 1 ? 's' : ''} registada{stores.length !== 1 ? 's' : ''}</p>
+        </div>
+        <button onClick={openNew} className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-5 py-2.5 rounded-xl font-semibold shadow-md transition">
+          <Plus className="w-5 h-5" /> Nova Loja
+        </button>
+      </div>
+
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Pesquisar por nome, NIF ou morada…"
+          className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-cyan-400 focus:outline-none" />
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <div className="w-8 h-8 border-2 border-cyan-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-20 text-gray-400">
+          <Store className="w-14 h-14 mx-auto mb-4 opacity-20" />
+          <p className="font-medium">{search ? 'Nenhuma loja encontrada' : 'Sem lojas registadas'}</p>
+          {!search && <button onClick={openNew} className="mt-4 text-cyan-600 hover:underline text-sm font-medium">Criar primeira loja →</button>}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {filtered.map(s => (
+            <div key={s.id} className={`bg-white rounded-2xl border shadow-sm p-5 flex flex-col gap-3 hover:shadow-md transition ${!s.active ? 'opacity-60' : ''}`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-cyan-100 flex items-center justify-center">
+                    <span className="text-xl font-bold text-cyan-600">{(s.name ?? '?').charAt(0).toUpperCase()}</span>
+                  </div>
+                  <div>
+                    <p className="font-bold text-gray-800">{s.name}</p>
+                    {s.nif && <p className="text-xs text-gray-400">NIF: {s.nif}</p>}
+                  </div>
+                </div>
+                <span className={`flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-full ${s.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {s.active ? <CheckCircle className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                  {s.active ? 'Activa' : 'Inactiva'}
+                </span>
+              </div>
+              <div className="space-y-1 text-xs text-gray-500">
+                {s.address && <p className="flex items-center gap-1.5"><MapPin className="w-3 h-3 flex-shrink-0" />{s.address}</p>}
+                {s.phone   && <p className="flex items-center gap-1.5"><Building2 className="w-3 h-3 flex-shrink-0" />{s.phone}</p>}
+                {s.email   && <p className="truncate">{s.email}</p>}
+                <p className="text-gray-400">IVA: {s.iva_rate ?? 14}%</p>
+              </div>
+              <div className="flex gap-2 mt-auto pt-3 border-t border-gray-100">
+                <button onClick={() => openEdit(s)} className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-gray-50 hover:bg-cyan-50 hover:text-cyan-700 text-gray-600 py-2 rounded-lg transition">
+                  <Edit className="w-3.5 h-3.5" /> Editar
+                </button>
+                <button onClick={() => handleToggleActive(s)} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-lg transition ${s.active ? 'bg-red-50 hover:bg-red-100 text-red-600' : 'bg-green-50 hover:bg-green-100 text-green-700'}`}>
+                  {s.active ? <><XCircle className="w-3.5 h-3.5" /> Desactivar</> : <><CheckCircle className="w-3.5 h-3.5" /> Activar</>}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-6 border-b">
+              <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <Store className="w-5 h-5 text-cyan-600" />
+                {form.id ? 'Editar Loja' : 'Nova Loja'}
+              </h3>
+              <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              {fields.map(({ label, key, placeholder }) => (
+                <div key={key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+                  <input type="text" value={form[key] as string} onChange={fld(key)} placeholder={placeholder}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:ring-2 focus:ring-cyan-400 focus:outline-none" />
+                </div>
+              ))}
+              <label className="flex items-center gap-3 cursor-pointer select-none">
+                <input type="checkbox" checked={form.active} onChange={fld('active')} className="w-4 h-4 rounded accent-cyan-600" />
+                <span className="text-sm font-medium text-gray-700">Loja activa (visível para utilizadores)</span>
+              </label>
+            </div>
+            <div className="flex gap-3 p-6 pt-0">
+              <button onClick={() => setShowModal(false)} className="flex-1 border border-gray-200 text-gray-600 hover:bg-gray-50 py-2.5 rounded-xl text-sm font-medium transition">Cancelar</button>
+              <button onClick={handleSave} disabled={saving} className="flex-1 bg-cyan-600 hover:bg-cyan-700 text-white py-2.5 rounded-xl text-sm font-semibold transition flex items-center justify-center gap-2 disabled:opacity-60">
+                {saving ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? 'A guardar…' : 'Guardar Loja'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

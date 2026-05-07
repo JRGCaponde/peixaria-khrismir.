@@ -5,6 +5,7 @@
  */
 
 import { supabase, isSupabaseReady } from './supabase'
+import { getCurrentStoreId } from './storeContext'
 import type { Order, Product, Category, CashFlow, Purchase, DeliveryZone, PromoCode } from '../types/database'
 import type { StoreSettings } from './settings'
 
@@ -13,26 +14,46 @@ function ls<T>(key: string, fallback: T): T {
 }
 function lsSet(key: string, v: any) { localStorage.setItem(key, JSON.stringify(v)) }
 
+
 // ── PULL: Supabase → localStorage ─────────────────────────────
 export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
 
   try {
+    const sid = getCurrentStoreId()
+    const sf = (q: any) => sid ? q.eq('store_id', sid) : q
+
     const [cat, prod, ord, cf, pur, zones, promos, sets, sup, ret, loy, shifts, profiles] = await Promise.all([
-      supabase.from('categories').select('*').order('name'),
-      supabase.from('products').select('*').order('name'),
-      supabase.from('orders').select('*, order_items(*)').order('created_at', { ascending: false }),
-      supabase.from('cash_flow').select('*').order('created_at', { ascending: false }),
-      supabase.from('purchases').select('*').order('created_at', { ascending: false }),
-      supabase.from('delivery_zones').select('*').order('name'),
-      supabase.from('promo_codes').select('*').order('created_at', { ascending: false }),
-      supabase.from('store_settings').select('*').eq('id', 1).maybeSingle(),
-      supabase.from('suppliers').select('*').order('name'),
-      supabase.from('returns').select('*').order('created_at', { ascending: false }),
-      supabase.from('loyalty_transactions').select('*').order('created_at', { ascending: false }),
-      supabase.from('shift_sessions').select('*').order('opened_at', { ascending: false }),
-      supabase.from('profiles').select('*').eq('role', 'client').order('created_at', { ascending: false }),
+      sf(supabase.from('categories').select('*').order('name')),
+      sf(supabase.from('products').select('*').order('name')),
+      sf(supabase.from('orders').select('*, order_items(*)').order('created_at', { ascending: false })),
+      sf(supabase.from('cash_flow').select('*').order('created_at', { ascending: false })),
+      sf(supabase.from('purchases').select('*').order('created_at', { ascending: false })),
+      sf(supabase.from('delivery_zones').select('*').order('name')),
+      sf(supabase.from('promo_codes').select('*').order('created_at', { ascending: false })),
+      sid
+        ? supabase.from('store_settings').select('*').eq('store_id', sid).maybeSingle()
+        : supabase.from('store_settings').select('*').eq('id', 1).maybeSingle(),
+      sf(supabase.from('suppliers').select('*').order('name')),
+      sf(supabase.from('returns').select('*').order('created_at', { ascending: false })),
+      sf(supabase.from('loyalty_transactions').select('*').order('created_at', { ascending: false })),
+      sf(supabase.from('shift_sessions').select('*').order('opened_at', { ascending: false })),
+      sid
+        ? supabase.from('profiles').select('*').eq('role', 'client').eq('store_id', sid).order('created_at', { ascending: false })
+        : supabase.from('profiles').select('*').eq('role', 'client').order('created_at', { ascending: false }),
     ])
+
+    // Fluxo de caixa (novo sistema) — pull paralelo
+    const [cfAccounts, cfCategories, cfMovements, storesData] = await Promise.all([
+      sf(supabase.from('cf_accounts').select('*').order('name')),
+      sf(supabase.from('cf_categories').select('*').order('name')),
+      sf(supabase.from('cf_movements').select('*').order('created_at', { ascending: false })),
+      supabase.from('stores').select('*').eq('active', true).order('name'),
+    ])
+    if (cfAccounts.data && cfAccounts.data.length > 0)    lsSet('cf_accounts',    cfAccounts.data)
+    if (cfCategories.data && cfCategories.data.length > 0) lsSet('cf_categories', cfCategories.data)
+    if (cfMovements.data && cfMovements.data.length > 0)   lsSet('cf_movements',  cfMovements.data.map((m: any) => ({ ...m, accountTo: m.account_to })))
+    if (storesData.data)  lsSet('khrismir_stores', storesData.data)
 
     if (cat.data)    lsSet('khrismir_categories', cat.data)
     if (prod.data)   lsSet('khrismir_products', prod.data)
@@ -106,17 +127,24 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
   const loyalty:     any[]                 = ls('khrismir_loyalty', [])
   const shifts:      any[]                 = ls('khrismir_shifts', [])
 
+  const sid = getCurrentStoreId()
+
   await upsert('categories', categories.map(c => ({
     id: c.id, name: c.name, description: c.description ?? '', image_url: c.image_url ?? '',
+    store_id: sid,
   })), 'Categorias')
 
+  // IMPORTANTE: stock_quantity é EXCLUÍDO do pushAll para não sobrescrever
+  // o stock gerido atomicamente pelo RPC decrement_product_stock.
+  // O stock só é actualizado por: RPC (venda POS/checkout) ou syncProducts (Admin edita produto).
   await upsert('products', products.map(p => ({
     id: p.id, name: p.name, price: p.price, cost_price: p.cost_price ?? 0,
-    unit: p.unit, stock_quantity: p.stock_quantity, min_stock: p.min_stock,
+    unit: p.unit, min_stock: p.min_stock,
     allow_whole: p.allow_whole, allow_clean: p.allow_clean,
     allow_fillet: p.allow_fillet, allow_steak: p.allow_steak,
     category_id: p.category_id, image_url: p.image_url ?? '',
     expiry_date: p.expiry_date ?? null, created_at: p.created_at,
+    store_id: sid,
   })), 'Produtos')
 
   // Encomendas — estratégia à prova de falhas para evitar duplicate key em order_number
@@ -187,7 +215,7 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
           id: i.id, order_id: o.id, product_id: i.product_id ?? '',
           product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
           unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
-          total_price: i.total_price ?? 0,
+          total_price: i.total_price ?? 0, store_id: sid,
         })))
         if (allItems.length) {
           // Desduplicar itens por id
@@ -212,7 +240,7 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
   await upsert('cash_flow', cashFlow.map(c => ({
     id: c.id, type: c.type, amount: c.amount, description: c.description,
     order_number: (c as any).order_number ?? '', payment_type: (c as any).payment_type ?? '',
-    created_at: c.created_at,
+    created_at: c.created_at, store_id: sid,
   })), 'Fluxo de Caixa')
 
   await upsert('purchases', purchases.map(p => ({
@@ -220,34 +248,38 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     product_name: (p as any).product_name ?? '', quantity: (p as any).quantity ?? 0,
     unit_price: (p as any).unit_price ?? 0, total_price: (p as any).total_price ?? 0,
     supplier: (p as any).supplier ?? '', created_at: (p as any).created_at,
+    store_id: sid,
   })), 'Compras')
 
   await upsert('delivery_zones', zones.map(z => ({
     id: z.id, name: z.name, price: z.price, description: z.description ?? '',
+    store_id: sid,
   })), 'Zonas de Entrega')
 
   await upsert('promo_codes', promos.map(p => ({
     id: p.id, code: p.code, discount_type: p.discount_type, discount_value: p.discount_value,
     min_order: p.min_order ?? 0, uses: p.uses ?? 0, max_uses: p.max_uses ?? null,
     expires_at: p.expires_at ?? null, active: p.active ?? true, created_at: p.created_at,
+    store_id: sid,
   })), 'Promoções')
 
   await upsert('suppliers', suppliers.map(s => ({
     id: s.id, name: s.name, nif: s.nif ?? '', phone: s.phone ?? '',
     email: s.email ?? '', address: s.address ?? '', notes: s.notes ?? '',
-    created_at: s.created_at,
+    created_at: s.created_at, store_id: sid,
   })), 'Fornecedores')
 
   await upsert('returns', returns_.map(r => ({
     id: r.id, order_id: r.order_id ?? '', order_number: r.order_number,
     customer_name: r.customer_name ?? '', items: r.items ?? [],
     total: r.total ?? 0, reason: r.reason ?? '', created_at: r.created_at,
+    store_id: sid,
   })), 'Devoluções')
 
   await upsert('loyalty_transactions', loyalty.map(l => ({
     id: l.id, client_id: l.client_id ?? '', client_name: l.client_name ?? '',
     points: l.points ?? 0, type: l.type, order_id: l.order_id ?? '',
-    created_at: l.created_at,
+    created_at: l.created_at, store_id: sid,
   })), 'Fidelização')
 
   await upsert('shift_sessions', shifts.map(s => ({
@@ -255,6 +287,7 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     opening_balance: s.opening_balance ?? 0, closing_balance: s.closing_balance ?? null,
     cash_counted: s.cash_counted ?? null, difference: s.difference ?? null,
     opened_by: s.opened_by ?? '', closed_by: s.closed_by ?? null, notes: s.notes ?? '',
+    store_id: sid,
   })), 'Turnos')
 
   if (Object.keys(settings).length) {
@@ -272,20 +305,57 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
 
 export async function syncProducts(products: Product[]) {
   if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
   supabase.from('products').upsert(products.map(p => ({
     id: p.id, name: p.name, price: p.price, cost_price: p.cost_price ?? 0,
     unit: p.unit, stock_quantity: p.stock_quantity, min_stock: p.min_stock,
     allow_whole: p.allow_whole, allow_clean: p.allow_clean,
     allow_fillet: p.allow_fillet, allow_steak: p.allow_steak,
     category_id: p.category_id, image_url: p.image_url ?? '',
-    expiry_date: p.expiry_date ?? null,
+    expiry_date: p.expiry_date ?? null, store_id: sid,
   })), { onConflict: 'id' }).then()
+}
+
+/**
+ * Decrementa o stock de um produto atomicamente no Supabase via RPC.
+ * Retorna o novo stock_quantity confirmado pelo servidor, ou null em caso de erro.
+ * Actualiza também o localStorage com o valor autoritativo do servidor.
+ */
+export async function syncProductStock(productId: string, quantity: number): Promise<number | null> {
+  if (!isSupabaseReady() || !supabase) return null
+  try {
+    const { data, error } = await supabase.rpc('decrement_product_stock', {
+      p_product_id: productId,
+      p_quantity: quantity,
+      p_store_id: getCurrentStoreId(),
+    })
+    if (error || !data || !data.length) {
+      console.warn('[syncProductStock] RPC error:', error?.message)
+      return null
+    }
+    const newStock: number = data[0].stock_quantity
+    // Actualiza localStorage com o valor autoritativo do servidor
+    try {
+      const prods: Product[] = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
+      const idx = prods.findIndex(p => p.id === productId)
+      if (idx !== -1) {
+        prods[idx].stock_quantity = newStock
+        localStorage.setItem('khrismir_products', JSON.stringify(prods))
+      }
+    } catch { /* non-fatal */ }
+    return newStock
+  } catch (e: any) {
+    console.warn('[syncProductStock] exception:', e?.message)
+    return null
+  }
 }
 
 export async function syncCategories(categories: Category[]) {
   if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
   supabase.from('categories').upsert(categories.map(c => ({
     id: c.id, name: c.name, description: c.description ?? '', image_url: c.image_url ?? '',
+    store_id: sid,
   })), { onConflict: 'id' }).then()
 }
 
@@ -305,17 +375,19 @@ export async function syncOrder(order: Order): Promise<boolean> {
     discount_amount: o.discount_amount ?? 0, subtotal: o.subtotal ?? o.total ?? 0,
     total: o.total ?? 0, notes: o.notes ?? '',
     created_at: o.created_at, updated_at: o.updated_at,
+    store_id: getCurrentStoreId(),
   }
   const { error } = await supabase.from('orders').upsert(orderRow, { onConflict: 'id' })
   if (error) { console.warn('Sync order error:', error.message); return false }
   const items = o.items || []
   if (items.length) {
+    const sid = getCurrentStoreId()
     const { error: ie } = await supabase.from('order_items').upsert(
       items.map((i: any) => ({
         id: i.id, order_id: order.id, product_id: i.product_id ?? '',
         product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
         unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
-        total_price: i.total_price ?? 0,
+        total_price: i.total_price ?? 0, store_id: sid,
       })),
       { onConflict: 'id' }
     )
@@ -331,56 +403,154 @@ export async function syncOrderStatus(id: string, status: string) {
 
 export async function syncCashFlow(entries: CashFlow[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('cash_flow').upsert(entries, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('cash_flow').upsert(entries.map(e => ({ ...e, store_id: sid })), { onConflict: 'id' }).then()
 }
 
 export async function syncPurchases(purchases: any[]) {
   if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
   supabase.from('purchases').upsert(purchases.map(p => ({
-    id: p.id,
-    product_id: p.product_id ?? '',
-    product_name: p.product_name ?? '',
-    quantity: p.quantity ?? 0,
-    unit_price: p.unit_price ?? 0,
-    total_price: p.total_price ?? 0,
-    supplier: p.supplier ?? '',
-    created_at: p.created_at,
+    id: p.id, product_id: p.product_id ?? '', product_name: p.product_name ?? '',
+    quantity: p.quantity ?? 0, unit_price: p.unit_price ?? 0, total_price: p.total_price ?? 0,
+    supplier: p.supplier ?? '', created_at: p.created_at, store_id: sid,
   })), { onConflict: 'id' }).then()
 }
 
 export async function syncSettings(settings: StoreSettings) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('store_settings').upsert({ id: 1, ...settings, updated_at: new Date().toISOString() }, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  // id baseado no store_id para permitir multi-loja (uuid ou fallback '1')
+  const rowId = sid ?? '1'
+  supabase.from('store_settings').upsert(
+    { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid },
+    { onConflict: 'store_id' }
+  ).then()
+}
+
+// ── LOJAS ─────────────────────────────────────────────────
+
+export async function syncStore(store: {
+  id?: string; name: string; slug?: string; address?: string; phone?: string;
+  email?: string; whatsapp?: string; nif?: string; iva_rate?: number; active?: boolean
+}): Promise<{ id: string } | null> {
+  if (!isSupabaseReady() || !supabase) return null
+  const row: any = {
+    name: store.name,
+    slug: store.slug || store.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+    address: store.address ?? '',
+    phone: store.phone ?? '',
+    email: store.email ?? '',
+    whatsapp: store.whatsapp ?? '',
+    nif: store.nif ?? '',
+    iva_rate: store.iva_rate ?? 14,
+    active: store.active !== false,
+    updated_at: new Date().toISOString(),
+  }
+  if (store.id) row.id = store.id
+  const { data, error } = await supabase.from('stores').upsert(row, { onConflict: 'id' }).select('id').maybeSingle()
+  if (error) { console.warn('[syncStore]', error.message); return null }
+  return data
+}
+
+export async function deleteStore(id: string) {
+  if (!isSupabaseReady() || !supabase) return
+  supabase.from('stores').update({ active: false }).eq('id', id).then()
 }
 
 export async function syncDeliveryZones(zones: DeliveryZone[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('delivery_zones').upsert(zones, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('delivery_zones').upsert(zones.map(z => ({ ...z, store_id: sid })), { onConflict: 'id' }).then()
 }
 
 export async function syncPromos(promos: PromoCode[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('promo_codes').upsert(promos, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('promo_codes').upsert(promos.map(p => ({ ...p, store_id: sid })), { onConflict: 'id' }).then()
 }
 
 export async function syncSuppliers(suppliers: any[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('suppliers').upsert(suppliers, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('suppliers').upsert(suppliers.map(s => ({ ...s, store_id: sid })), { onConflict: 'id' }).then()
 }
 
 export async function syncReturns(returns_: any[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('returns').upsert(returns_, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('returns').upsert(returns_.map(r => ({ ...r, store_id: sid })), { onConflict: 'id' }).then()
 }
 
 export async function syncLoyalty(transactions: any[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('loyalty_transactions').upsert(transactions, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('loyalty_transactions').upsert(transactions.map(l => ({ ...l, store_id: sid })), { onConflict: 'id' }).then()
 }
 
 export async function syncShifts(shifts: any[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('shift_sessions').upsert(shifts, { onConflict: 'id' }).then()
+  const sid = getCurrentStoreId()
+  supabase.from('shift_sessions').upsert(shifts.map(s => ({ ...s, store_id: sid })), { onConflict: 'id' }).then()
+}
+
+// ── FLUXO DE CAIXA — novo sistema (cf_*) ─────────────────────
+
+export async function syncCfAccounts(accounts: any[]) {
+  if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
+  supabase.from('cf_accounts').upsert(
+    accounts.map(a => ({
+      id: a.id, name: a.name, balance: a.balance ?? 0,
+      type: a.type ?? 'cash', color: a.color ?? '#06b6d4',
+      store_id: sid, updated_at: new Date().toISOString(),
+    })),
+    { onConflict: 'id' }
+  ).then()
+}
+
+export async function syncCfCategories(categories: any[]) {
+  if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
+  supabase.from('cf_categories').upsert(
+    categories.map(c => ({
+      id: c.id, name: c.name, type: c.type ?? 'expense',
+      color: c.color ?? '#6b7280',
+      store_id: sid, updated_at: new Date().toISOString(),
+    })),
+    { onConflict: 'id' }
+  ).then()
+}
+
+export async function syncCfMovements(movements: any[]) {
+  if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
+  supabase.from('cf_movements').upsert(
+    movements.map(m => ({
+      id: m.id, date: m.date, type: m.type,
+      description: m.description ?? '', amount: m.amount ?? 0,
+      category: m.category ?? '', account: m.account ?? '',
+      account_to: m.accountTo ?? null, reference: m.reference ?? null,
+      created_at: m.created_at ?? new Date().toISOString(),
+      store_id: sid,
+    })),
+    { onConflict: 'id' }
+  ).then()
+}
+
+export async function deleteCfMovement(id: string) {
+  if (!isSupabaseReady() || !supabase) return
+  supabase.from('cf_movements').delete().eq('id', id).then()
+}
+
+export async function deleteCfAccount(id: string) {
+  if (!isSupabaseReady() || !supabase) return
+  supabase.from('cf_accounts').delete().eq('id', id).then()
+}
+
+export async function deleteCfCategory(id: string) {
+  if (!isSupabaseReady() || !supabase) return
+  supabase.from('cf_categories').delete().eq('id', id).then()
 }
 
 export async function deleteProduct(id: string) {

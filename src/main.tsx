@@ -5,12 +5,14 @@ import App from './App'
 import { useAuthStore } from './stores/useAuthStore'
 import { pullAll } from './lib/sync'
 import { isSupabaseReady } from './lib/supabase'
+import { startRealtime } from './lib/realtime'
 
-// Inicializar sessão Supabase e sincronizar dados ao arrancar
+// Inicializar sessão Supabase, sincronizar dados e arrancar Realtime
 async function boot() {
   if (isSupabaseReady()) {
     await useAuthStore.getState().initSupabaseSession()
-    await pullAll()
+    await pullAll()      // Primeiro pull: traz tudo do Supabase para localStorage
+    startRealtime()      // A partir daqui qualquer mudança no Supabase chega em tempo real
   }
 }
 boot()

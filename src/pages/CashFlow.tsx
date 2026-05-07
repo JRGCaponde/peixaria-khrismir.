@@ -13,7 +13,7 @@ import * as XLSX from 'xlsx'
 import { format, subDays, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns'
 import { migrateExistingData, syncAllData } from '../lib/cashflow'
 import { TurnoTab } from './_TurnoTab'
-import { pullAll } from '../lib/sync'
+import { pullAll, syncCfAccounts, syncCfCategories, syncCfMovements, deleteCfMovement, deleteCfAccount, deleteCfCategory } from '../lib/sync'
 import { isSupabaseReady } from '../lib/supabase'
 
 // ── Types ──────────────────────────────────────────────────────
@@ -73,24 +73,62 @@ export default function CashFlow() {
   const [categories, setCategories] = useState<Category[]>(() => ls('cf_categories', DEFAULT_CATEGORIES))
   const [movements, setMovements]   = useState<CashMovement[]>(() => ls('cf_movements', []))
 
-  // Sincroniza todos os pedidos e compras na abertura da página
+  // ── Carregamento inicial + Realtime ───────────────────────────
   useEffect(() => {
+    const loadAll = () => {
+      setAccounts(ls('cf_accounts', DEFAULT_ACCOUNTS))
+      setCategories(ls('cf_categories', DEFAULT_CATEGORIES))
+      setMovements(ls('cf_movements', []))
+    }
+
+    // Migração do sistema antigo (corre 1x) + sincroniza pedidos/compras como movimentos
     migrateExistingData()
     syncAllData()
-    const synced: CashMovement[] = ls('cf_movements', [])
-    setMovements(synced)
-    // Puxa dados do Supabase (encomendas, compras, caixa) para ter histórico completo cross-device
+
     if (isSupabaseReady()) {
       pullAll().then(() => {
+        // Após pull, regenera movimentos derivados de pedidos/compras
         syncAllData()
-        setMovements(ls('cf_movements', []))
+        loadAll()
+
+        // Sobe para Supabase quaisquer dados locais que ainda não estejam lá
+        const localAccs = ls<any[]>('cf_accounts', [])
+        const localCats = ls<any[]>('cf_categories', DEFAULT_CATEGORIES)
+        const localMovs = ls<any[]>('cf_movements', [])
+        if (localAccs.length > 0) syncCfAccounts(localAccs)
+        if (localCats.length > 0) syncCfCategories(localCats)
+        if (localMovs.length > 0) syncCfMovements(localMovs)
       })
+    } else {
+      loadAll()
     }
+
+    // Ouve eventos Realtime (outro dispositivo alterou dados)
+    const handleSync = (e: Event) => {
+      const table = (e as CustomEvent).detail?.table
+      if (!table || ['cf_accounts', 'cf_categories', 'cf_movements'].includes(table)) {
+        loadAll()
+      }
+    }
+    window.addEventListener('khrismir:sync', handleSync)
+    return () => window.removeEventListener('khrismir:sync', handleSync)
   }, [])
 
-  useEffect(() => { localStorage.setItem('cf_accounts', JSON.stringify(accounts)) }, [accounts])
-  useEffect(() => { localStorage.setItem('cf_categories', JSON.stringify(categories)) }, [categories])
-  useEffect(() => { localStorage.setItem('cf_movements', JSON.stringify(movements)) }, [movements])
+  // Persiste no localStorage E sincroniza no Supabase quando os dados mudam
+  useEffect(() => {
+    localStorage.setItem('cf_accounts', JSON.stringify(accounts))
+    if (isSupabaseReady() && accounts.length > 0) syncCfAccounts(accounts)
+  }, [accounts])
+
+  useEffect(() => {
+    localStorage.setItem('cf_categories', JSON.stringify(categories))
+    if (isSupabaseReady() && categories.length > 0) syncCfCategories(categories)
+  }, [categories])
+
+  useEffect(() => {
+    localStorage.setItem('cf_movements', JSON.stringify(movements))
+    if (isSupabaseReady() && movements.length > 0) syncCfMovements(movements)
+  }, [movements])
 
   const totalBalance = useMemo(() => accounts.reduce((s, a) => s + a.balance, 0), [accounts])
 
@@ -411,6 +449,7 @@ function Movements({ movements, setMovements, accounts, setAccounts, categories 
       }
       return a
     }))
+    deleteCfMovement(mv.id)
     toast.success('Movimento eliminado')
   }
 
@@ -593,6 +632,7 @@ function AccountsTab({ accounts, setAccounts, movements }: {
     if (inUse) { toast.error('Não é possível eliminar uma conta com movimentos associados'); return }
     if (!confirm(`Eliminar a conta "${acc.name}"?`)) return
     setAccounts(prev => prev.filter(a => a.id !== acc.id))
+    deleteCfAccount(acc.id)
     toast.success('Conta eliminada')
   }
 
@@ -717,6 +757,7 @@ function CategoriesTab({ categories, setCategories, movements }: {
     if (inUse) { toast.error('Categoria em uso — não pode ser eliminada'); return }
     if (!confirm(`Eliminar categoria "${cat.name}"?`)) return
     setCategories(prev => prev.filter(c => c.id !== cat.id))
+    deleteCfCategory(cat.id)
     toast.success('Categoria eliminada')
   }
 

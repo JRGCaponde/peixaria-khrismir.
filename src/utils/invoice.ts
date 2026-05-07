@@ -359,6 +359,7 @@ export function printBusinessInvoice(order: Order, settings: StoreSettings) {
 function open(html: string, title: string) {
   const win = window.open('', '_blank', 'width=960,height=750')
   if (!win) return
+  win.document.title = title
   win.document.write(html)
   win.document.close()
   setTimeout(() => win.print(), 500)

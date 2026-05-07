@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npx tsc *)",
+      "Bash(explorer *)",
+      "Bash(npx vite *)",
+      "mcp__claude_ai_Vercel__list_teams",
+      "mcp__claude_ai_Vercel__deploy_to_vercel",
+      "Bash(npx vercel *)",
+      "Bash(npm install *)",
+      "Bash(npx electron-builder *)",
+      "Bash(ELECTRON_CACHE=\"C:/Users/PC/AppData/Local/electron/Cache\" npx electron-builder --win dir)",
+      "Bash(node build-app.mjs)",
+      "WebSearch",
+      "Bash(where vercel *)",
+      "Bash(vercel whoami *)",
+      "Bash(vercel deploy *)",
+      "Bash(vercel env *)",
+      "Bash(npx supabase *)",
+      "PowerShell(Stop-Process *)",
+      "Bash(vercel --prod)"
+    ]
+  }
+}

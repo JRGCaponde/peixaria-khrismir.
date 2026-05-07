@@ -8,7 +8,6 @@ import type { CartItem, Order, PaymentType, DeliveryType, DeliveryZone, PromoCod
 import { calcOrderHash } from '../utils/saft'
 import { registerSaleMovement } from '../lib/cashflow'
 import { notifyNewOrder } from '../lib/sync'
-import { supabase, isSupabaseReady } from '../lib/supabase'
 
 export default function Cart() {
   const navigate = useNavigate()

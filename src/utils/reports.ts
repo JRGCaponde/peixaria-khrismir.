@@ -3,7 +3,7 @@
  * Abre nova janela HTML e aciona window.print() (→ "Guardar como PDF")
  */
 
-import type { Order, Purchase, CashFlow } from '../types/database'
+import type { Order, Purchase } from '../types/database'
 import type { StoreSettings } from '../lib/settings'
 
 // ── Utilitários ────────────────────────────────────────────────────────────────
@@ -21,6 +21,7 @@ const MONTHS_PT = [
 function openPDF(html: string, title: string) {
   const win = window.open('', '_blank', 'width=1100,height=800')
   if (!win) return
+  win.document.title = title
   win.document.write(html)
   win.document.close()
   setTimeout(() => win.print(), 600)
@@ -301,9 +302,38 @@ export function printMonthlySalesReport(orders: Order[], settings: StoreSettings
 // ══════════════════════════════════════════════════════════════════════════════
 // 3. RELATÓRIO DE COMPRAS
 // ══════════════════════════════════════════════════════════════════════════════
-export function printPurchasesReport(purchases: Purchase[], settings: StoreSettings, from: string, to: string) {
-  const filtered = purchases.filter(p => p.date.slice(0, 10) >= from && p.date.slice(0, 10) <= to)
-  const total    = filtered.reduce((s, p) => s + p.total, 0)
+// Nota: os registos reais no localStorage têm a estrutura:
+//   { id, product_id, quantity, unit_price, total_price, supplier, created_at }
+// O Purchase type legado tem campos distintos — usamos any[] para compatibilidade.
+export function printPurchasesReport(purchases: any[], settings: StoreSettings, from: string, to: string) {
+  // Lookup de produtos para resolver nomes a partir de product_id
+  let productsMap: Record<string, string> = {}
+  try {
+    const prods: any[] = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
+    prods.forEach(p => { productsMap[p.id] = p.name })
+  } catch { /* sem lookup */ }
+
+  const getDate  = (p: any): string => (p.created_at ?? p.date ?? '').slice(0, 10)
+  const getTotal = (p: any): number => Number(p.total_price ?? p.total ?? 0)
+  const getName  = (p: any): string => {
+    if (p.product_id) return productsMap[p.product_id] ?? `Produto #${p.product_id}`
+    if (Array.isArray(p.items) && p.items.length > 0) return p.items.map((i: any) => i.name).join(', ')
+    return '—'
+  }
+  const getDetail = (p: any): string => {
+    if (p.product_id) {
+      const name = productsMap[p.product_id] ?? `Produto #${p.product_id}`
+      return `${name} × ${p.quantity ?? 1} un. @ ${f(Number(p.unit_price ?? 0))} AKZ`
+    }
+    if (Array.isArray(p.items)) return p.items.map((i: any) => `${i.name} (${i.quantity} × ${f(i.unitPrice ?? 0)} AKZ)`).join('; ')
+    return '—'
+  }
+
+  const filtered = purchases.filter(p => {
+    const d = getDate(p)
+    return d >= from && d <= to
+  })
+  const total = filtered.reduce((s, p) => s + getTotal(p), 0)
 
   // Por fornecedor
   const bySupplier: Record<string, { count: number; total: number }> = {}
@@ -311,16 +341,21 @@ export function printPurchasesReport(purchases: Purchase[], settings: StoreSetti
     const s = p.supplier || 'Desconhecido'
     if (!bySupplier[s]) bySupplier[s] = { count: 0, total: 0 }
     bySupplier[s].count++
-    bySupplier[s].total += p.total
+    bySupplier[s].total += getTotal(p)
   })
 
-  // Por tipo
-  const byType: Record<string, number> = {}
-  filtered.forEach(p => { byType[p.type] = (byType[p.type] ?? 0) + p.total })
+  // Por produto
+  const byProduct: Record<string, { count: number; total: number; qty: number }> = {}
+  filtered.forEach(p => {
+    const k = getName(p)
+    if (!byProduct[k]) byProduct[k] = { count: 0, total: 0, qty: 0 }
+    byProduct[k].count++
+    byProduct[k].total += getTotal(p)
+    byProduct[k].qty   += Number(p.quantity ?? 0)
+  })
 
   const fromLabel = new Date(from + 'T12:00').toLocaleDateString('pt-AO', { day: '2-digit', month: 'long', year: 'numeric' })
   const toLabel   = new Date(to   + 'T12:00').toLocaleDateString('pt-AO', { day: '2-digit', month: 'long', year: 'numeric' })
-  const typeLabel: Record<string, string> = { fornecedor: 'Fornecedor Externo', interno: 'Compra Interna' }
 
   const supplierRows = Object.entries(bySupplier)
     .sort(([, a], [, b]) => b.total - a.total)
@@ -332,61 +367,62 @@ export function printPurchasesReport(purchases: Purchase[], settings: StoreSetti
       <td class="tr">${pct(v.total, total)}</td>
     </tr>`).join('')
 
+  const productRows = Object.entries(byProduct)
+    .sort(([, a], [, b]) => b.total - a.total)
+    .slice(0, 10)
+    .map(([name, v]) => `
+    <tr>
+      <td class="bold">${name}</td>
+      <td class="tc">${v.qty > 0 ? v.qty.toFixed(2) + ' un.' : v.count + ' reg.'}</td>
+      <td class="tr bold">${f(v.total)} AKZ</td>
+      <td class="tr">${pct(v.total, total)}</td>
+    </tr>`).join('')
+
   const purchaseRows = filtered
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .map(p => {
-      const itemsList = Array.isArray(p.items)
-        ? p.items.map((i: any) => `${i.name} (${i.quantity} × ${f(i.unitPrice)} AKZ)`).join('; ')
-        : '—'
-      return `
+    .sort((a, b) => getDate(b).localeCompare(getDate(a)))
+    .map(p => `
       <tr>
-        <td>${new Date(p.date + 'T12:00').toLocaleDateString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
+        <td>${new Date(getDate(p) + 'T12:00').toLocaleDateString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric' })}</td>
         <td class="bold">${p.supplier || '—'}</td>
-        <td class="tc"><span class="badge badge-blue">${typeLabel[p.type] ?? p.type}</span></td>
-        <td style="font-size:9px;color:#475569;max-width:200px">${itemsList}</td>
-        <td class="tc">${p.paymentType || '—'}</td>
-        <td class="tr bold red-t">${f(p.total)} AKZ</td>
+        <td style="font-size:9px;color:#475569;max-width:220px">${getDetail(p)}</td>
+        <td class="tr bold red-t">${f(getTotal(p))} AKZ</td>
       </tr>`
-    }).join('')
+    ).join('')
 
   const html = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8">
 <title>Compras ${from} a ${to}</title>${baseCSS()}</head><body>
   ${reportHeader(settings, 'RELATÓRIO DE COMPRAS', `${fromLabel} a ${toLabel}`)}
 
   <div class="kpi-grid kpi-grid-3">
-    <div class="kpi red"><label>Total Gasto em Compras</label><div class="val">${f(total)} AKZ</div><div class="sub">${filtered.length} compra(s)</div></div>
+    <div class="kpi red"><label>Total Gasto em Compras</label><div class="val">${f(total)} AKZ</div><div class="sub">${filtered.length} registo(s)</div></div>
     <div class="kpi"><label>Nº de Fornecedores</label><div class="val">${Object.keys(bySupplier).length}</div></div>
-    <div class="kpi"><label>Média por Compra</label><div class="val">${filtered.length > 0 ? f(total / filtered.length) : '0,00'} AKZ</div></div>
+    <div class="kpi"><label>Média por Registo</label><div class="val">${filtered.length > 0 ? f(total / filtered.length) : '0,00'} AKZ</div></div>
   </div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:4px">
     <div>
       <h2>Por Fornecedor</h2>
       <table>
-        <thead><tr><th>Fornecedor</th><th class="tc">Compras</th><th class="tr">Total</th><th class="tr">%</th></tr></thead>
+        <thead><tr><th>Fornecedor</th><th class="tc">Registos</th><th class="tr">Total</th><th class="tr">%</th></tr></thead>
         <tbody>${supplierRows || '<tr><td colspan="4" style="text-align:center;color:#94a3b8">Sem dados</td></tr>'}</tbody>
         <tr class="total-row"><td>TOTAL</td><td class="tc">${filtered.length}</td><td class="tr">${f(total)} AKZ</td><td class="tr">100%</td></tr>
       </table>
     </div>
     <div>
-      <h2>Por Tipo</h2>
+      <h2>Por Produto</h2>
       <table>
-        <thead><tr><th>Tipo</th><th class="tr">Total</th><th class="tr">%</th></tr></thead>
-        <tbody>
-          ${Object.entries(byType).map(([k, v]) => `
-            <tr><td>${typeLabel[k] ?? k}</td><td class="tr bold">${f(v)} AKZ</td><td class="tr">${pct(v, total)}</td></tr>
-          `).join('') || '<tr><td colspan="3" style="text-align:center;color:#94a3b8">Sem dados</td></tr>'}
-        </tbody>
-        <tr class="total-row"><td>TOTAL</td><td class="tr">${f(total)} AKZ</td><td class="tr">100%</td></tr>
+        <thead><tr><th>Produto</th><th class="tc">Quantidade</th><th class="tr">Total</th><th class="tr">%</th></tr></thead>
+        <tbody>${productRows || '<tr><td colspan="4" style="text-align:center;color:#94a3b8">Sem dados</td></tr>'}</tbody>
+        <tr class="total-row"><td>TOTAL</td><td class="tc">—</td><td class="tr">${f(total)} AKZ</td><td class="tr">100%</td></tr>
       </table>
     </div>
   </div>
 
   <h2>Detalhe de Todas as Compras</h2>
   <table>
-    <thead><tr><th>Data</th><th>Fornecedor</th><th class="tc">Tipo</th><th>Artigos</th><th class="tc">Pagamento</th><th class="tr">Total (AKZ)</th></tr></thead>
-    <tbody>${purchaseRows || '<tr><td colspan="6" style="text-align:center;padding:20px;color:#94a3b8">Sem compras no período seleccionado</td></tr>'}</tbody>
-    <tr class="total-row"><td colspan="5">TOTAL GASTO</td><td class="tr">${f(total)} AKZ</td></tr>
+    <thead><tr><th>Data</th><th>Fornecedor</th><th>Artigo / Detalhe</th><th class="tr">Total (AKZ)</th></tr></thead>
+    <tbody>${purchaseRows || '<tr><td colspan="4" style="text-align:center;padding:20px;color:#94a3b8">Sem compras no período seleccionado</td></tr>'}</tbody>
+    <tr class="total-row"><td colspan="3">TOTAL GASTO</td><td class="tr">${f(total)} AKZ</td></tr>
   </table>
 
   ${reportFooter(settings)}
@@ -401,7 +437,6 @@ export function printPurchasesReport(purchases: Purchase[], settings: StoreSetti
 export function printMonthlyReport(
   orders: Order[],
   purchases: Purchase[],
-  cashFlow: CashFlow[],
   settings: StoreSettings,
   year: number,
   month: number
@@ -532,7 +567,7 @@ export function printMonthlyReport(
 // ══════════════════════════════════════════════════════════════════════════════
 // 5. RELATÓRIO DE FLUXO DE CAIXA
 // ══════════════════════════════════════════════════════════════════════════════
-export function printCashFlowReport(cashFlow: CashFlow[], settings: StoreSettings, from: string, to: string) {
+export function printCashFlowReport(cashFlow: any[], settings: StoreSettings, from: string, to: string) {
   const filtered = cashFlow.filter(c => {
     const d = (c.created_at ?? '').slice(0, 10)
     return d >= from && d <= to

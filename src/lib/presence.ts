@@ -63,12 +63,12 @@ export function startPresenceTracking(user: { id: string; full_name: string; ema
       const state = channel!.presenceState<OnlineUser>()
       notify(buildUsersFromState(state))
     })
-    .on('presence', { event: 'join' }, ({ newPresences }) => {
+    .on('presence', { event: 'join' }, () => {
       // presence sync event já cobre isto; join serve de reforço
       const state = channel!.presenceState<OnlineUser>()
       notify(buildUsersFromState(state))
     })
-    .on('presence', { event: 'leave' }, ({ leftPresences }) => {
+    .on('presence', { event: 'leave' }, () => {
       const state = channel!.presenceState<OnlineUser>()
       notify(buildUsersFromState(state))
     })

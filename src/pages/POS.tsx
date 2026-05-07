@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Search, Trash2, X, Printer, Receipt, Tag, ShoppingBag, Clock } from 'lucide-react'
 import { toast } from 'sonner'
-import { QRCodeSVG } from 'qrcode.react'
 import type { Product, Category, CartItem, Order, OrderStatus, PaymentType, PreparationType, PromoCode } from '../types/database'
 import { getSettings } from '../lib/settings'
 import { printInvoice, printBusinessInvoice } from '../utils/invoice'
@@ -9,8 +8,9 @@ import { printReceipt } from '../utils/receipt'
 import { registerSaleMovement } from '../lib/cashflow'
 import { getOpenShift } from './_TurnoTab'
 import { calcOrderHash } from '../utils/saft'
-import { pullAll, syncOrderStatus } from '../lib/sync'
-import { isSupabaseReady, supabase } from '../lib/supabase'
+import { pullAll, syncOrderStatus, syncOrder, syncProductStock, syncCashFlow } from '../lib/sync'
+import { notifyDataChange } from '../lib/realtime'
+import { isSupabaseReady } from '../lib/supabase'
 
 const initialCategories: Category[] = [
   { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
@@ -76,32 +76,23 @@ export default function POS() {
     }
     syncAndLoad()
 
-    // Refresh periódico a cada 30 s — garante sync de produtos/preços/pedidos entre dispositivos
-    const interval = setInterval(async () => {
-      if (!isSupabaseReady()) return
-      await pullAll()
-      loadLocal()
-    }, 30000)
-
-    // Realtime: alterações de produtos (preço, desconto, stock) propagam imediatamente ao POS
-    let productChannel: any = null
-    if (isSupabaseReady() && supabase) {
-      productChannel = supabase
-        .channel('pos-products-realtime')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
-          // Qualquer alteração em produtos → recarrega
-          pullAll().then(() => loadLocal())
-        })
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-          setOrders(tryParse('khrismir_orders', []))
-          pullAll().then(() => setOrders(tryParse('khrismir_orders', [])))
-        })
-        .subscribe()
+    // Realtime global (realtime.ts): recarrega quando produtos, categorias ou encomendas mudam
+    const handleSync = (e: Event) => {
+      const table = (e as CustomEvent).detail?.table
+      if (!table || ['products', 'categories', 'orders', 'promo_codes'].includes(table)) {
+        loadLocal()
+      }
     }
+    window.addEventListener('khrismir:sync', handleSync)
+
+    // Fallback: re-sync a cada 2 minutos (caso WebSocket caia)
+    const interval = setInterval(() => {
+      if (isSupabaseReady()) pullAll().then(loadLocal)
+    }, 120000)
 
     return () => {
+      window.removeEventListener('khrismir:sync', handleSync)
       clearInterval(interval)
-      if (productChannel && supabase) supabase.removeChannel(productChannel)
     }
   }, [])
 
@@ -228,9 +219,11 @@ export default function POS() {
     const storedProducts = JSON.parse(localStorage.getItem('khrismir_products') || JSON.stringify(initialProducts))
     cart.forEach(cartItem => {
       const idx = storedProducts.findIndex((p: Product) => p.id === cartItem.id)
-      if (idx !== -1) storedProducts[idx].stock_quantity -= cartItem.weight * cartItem.quantity
+      if (idx !== -1) storedProducts[idx].stock_quantity = Math.max(0, storedProducts[idx].stock_quantity - cartItem.weight * cartItem.quantity)
     })
     localStorage.setItem('khrismir_products', JSON.stringify(storedProducts))
+    // Actualiza o estado React imediatamente para reflectir o novo stock na UI
+    setProducts(storedProducts)
 
     const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
     registerSaleMovement(cartTotal, orderNumber, paymentType, now.toString(), bankAccount)
@@ -254,6 +247,20 @@ export default function POS() {
     setLastOrder(newOrder)
     setShowReceipt(true)
     toast.success(`Venda ${orderNumber} concluída!`)
+
+    // ── Sync imediato para Supabase → todos os dispositivos recebem em < 1s ──
+    syncOrder(newOrder)                       // encomenda + itens
+    // Decrementa stock atomicamente por produto (evita race conditions com Realtime echo)
+    ;(async () => {
+      for (const cartItem of cart) {
+        await syncProductStock(cartItem.id, cartItem.weight * cartItem.quantity)
+      }
+      notifyDataChange('products')           // UI atualiza com stock autoritativo do servidor
+    })()
+    const cf = JSON.parse(localStorage.getItem('khrismir_cashflow') || '[]')
+    syncCashFlow(cf)                          // movimento de caixa
+    // Notifica os outros componentes neste dispositivo também
+    notifyDataChange('orders')
 
     // Impressão automática: fatura AGT se NIF do cliente, talão simples caso contrário
     if (newOrder.customer_nif) {

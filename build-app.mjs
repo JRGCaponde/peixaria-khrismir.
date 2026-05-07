@@ -1,6 +1,10 @@
 /**
- * Script de empacotamento manual para Windows
- * Cria a pasta release/PeixariaKhrismir-win32-x64/ pronta a distribuir
+ * build-app.mjs — Empacotamento do Electron para Windows
+ *
+ * Estratégia em dois modos:
+ *  - FRESH: pasta release não existe → copia Electron completo + app
+ *  - UPDATE: pasta existe mas exe está bloqueado → actualiza só o código da app
+ *            (útil quando o utilizador está a usar o .exe enquanto fazemos deploy)
  */
 
 import fs from 'fs'
@@ -13,7 +17,6 @@ const SRC_ELECTRON = path.join(__dirname, 'node_modules/electron/dist')
 const OUT_DIR      = path.join(__dirname, 'release/PeixariaKhrismir-win32-x64')
 const APP_DIR      = path.join(OUT_DIR, 'resources/app')
 
-// ── Utilitários ────────────────────────────────────────────────
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true })
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -26,71 +29,84 @@ function copyDir(src, dest) {
 
 function mb(bytes) { return (bytes / 1024 / 1024).toFixed(1) + ' MB' }
 
-// ── Início ─────────────────────────────────────────────────────
+function tryRmDir(dir) {
+  try { fs.rmSync(dir, { recursive: true }); return true }
+  catch { return false }
+}
+
 console.log('\n🐟 Peixaria Khrismir — Construção do Executável\n')
 
-// 1. Limpar e criar pasta de saída
-if (fs.existsSync(OUT_DIR)) {
-  console.log('🗑  Limpar pasta anterior...')
-  fs.rmSync(OUT_DIR, { recursive: true })
-}
-fs.mkdirSync(OUT_DIR, { recursive: true })
-fs.mkdirSync(APP_DIR, { recursive: true })
-
-// 2. Copiar Electron (sem a pasta resources original, que vamos substituir)
-console.log('📦 Copiar Electron...')
-for (const entry of fs.readdirSync(SRC_ELECTRON, { withFileTypes: true })) {
-  if (entry.name === 'resources') continue // substituímos a seguir
-  const s = path.join(SRC_ELECTRON, entry.name)
-  const d = path.join(OUT_DIR, entry.name)
-  if (entry.isDirectory()) copyDir(s, d)
-  else fs.copyFileSync(s, d)
-}
-
-// 3. Renomear electron.exe para o nome do produto
-const exeSrc = path.join(OUT_DIR, 'electron.exe')
 const exeDst = path.join(OUT_DIR, 'PeixariaKhrismir.exe')
-fs.renameSync(exeSrc, exeDst)
-console.log('✅ Executável: PeixariaKhrismir.exe')
+const alreadyExists = fs.existsSync(exeDst)
 
-// 4. Copiar ficheiros da app para resources/app/
-console.log('📋 Copiar ficheiros da app...')
+// ── MODO FRESH (primeira vez ou pasta limpa) ────────────────────
+if (!alreadyExists) {
+  console.log('📦 Instalação completa (cópia do Electron)...')
 
-// package.json mínimo
+  if (fs.existsSync(OUT_DIR)) tryRmDir(OUT_DIR)
+  fs.mkdirSync(OUT_DIR, { recursive: true })
+  fs.mkdirSync(APP_DIR, { recursive: true })
+
+  // Copiar Electron (sem pasta resources — substituímos)
+  for (const entry of fs.readdirSync(SRC_ELECTRON, { withFileTypes: true })) {
+    if (entry.name === 'resources') continue
+    const s = path.join(SRC_ELECTRON, entry.name)
+    const d = path.join(OUT_DIR, entry.name)
+    if (entry.isDirectory()) copyDir(s, d)
+    else fs.copyFileSync(s, d)
+  }
+
+  // Renomear electron.exe → PeixariaKhrismir.exe
+  const exeSrc = path.join(OUT_DIR, 'electron.exe')
+  fs.renameSync(exeSrc, exeDst)
+  console.log('✅ Executável: PeixariaKhrismir.exe')
+
+} else {
+  // ── MODO UPDATE (exe existe — só actualiza o código da app) ───
+  console.log('🔄 Modo actualização — só o código da app será substituído')
+  console.log('   (O PeixariaKhrismir.exe pode estar aberto — sem problema)')
+
+  // Apagar só a pasta app (não o exe nem as DLLs)
+  if (fs.existsSync(APP_DIR)) {
+    const removed = tryRmDir(APP_DIR)
+    if (!removed) {
+      console.warn('⚠  Não foi possível limpar resources/app — continuando na mesma...')
+    }
+  }
+  fs.mkdirSync(APP_DIR, { recursive: true })
+}
+
+// ── Copiar código da app (igual em ambos os modos) ─────────────
+console.log('📋 Copiar código da app...')
+
 fs.writeFileSync(path.join(APP_DIR, 'package.json'), JSON.stringify({
   name: 'peixaria-khrismir',
   version: '1.5.0',
   main: 'electron/main.cjs',
 }, null, 2))
 
-// Electron main process
 const electronDir = path.join(APP_DIR, 'electron')
 fs.mkdirSync(electronDir, { recursive: true })
-fs.copyFileSync(
-  path.join(__dirname, 'electron/main.cjs'),
-  path.join(electronDir, 'main.cjs')
-)
+fs.copyFileSync(path.join(__dirname, 'electron/main.cjs'),    path.join(electronDir, 'main.cjs'))
+fs.copyFileSync(path.join(__dirname, 'electron/preload.cjs'), path.join(electronDir, 'preload.cjs'))
 
-// dist (ficheiro único HTML com tudo incluído)
+// Marcador com o caminho do projecto (para o botão de deploy nativo)
+fs.writeFileSync(path.join(OUT_DIR, '.khrismir-project-root'), __dirname)
+
 const distSrc = path.join(__dirname, 'dist')
 if (!fs.existsSync(distSrc)) {
   console.error('❌ Pasta dist/ não encontrada. Execute primeiro: npm run build')
   process.exit(1)
 }
-const distDst = path.join(APP_DIR, 'dist')
-copyDir(distSrc, distDst)
+copyDir(distSrc, path.join(APP_DIR, 'dist'))
 console.log('✅ App copiada para resources/app/')
 
-// 5. Mostrar resultado
-const exeSize = fs.statSync(exeDst).size
-const htmlSize = fs.statSync(path.join(distDst, 'index.html')).size
+// ── Resultado ──────────────────────────────────────────────────
+const exeSize  = fs.statSync(exeDst).size
+const htmlSize = fs.statSync(path.join(APP_DIR, 'dist', 'index.html')).size
 console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-console.log('✅ Pronto! Pasta criada:')
+console.log(alreadyExists ? '🔄 App actualizada (reinicie o PeixariaKhrismir.exe)' : '✅ Instalação completa!')
 console.log(`   ${OUT_DIR}`)
 console.log(`\n   PeixariaKhrismir.exe  ${mb(exeSize)}`)
 console.log(`   index.html (app)       ${mb(htmlSize)}`)
-console.log('\n📌 Para distribuir:')
-console.log('   Compacte a pasta inteira em .zip e envie.')
-console.log('   O utilizador extrai e abre PeixariaKhrismir.exe')
-console.log('   Não precisa de instalar nada.')
 console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n')
