@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, MicOff, Volume2, Trash2, HelpCircle, ArrowLeft } from 'lucide-react'
+import { Mic, MicOff, Volume2, Trash2, HelpCircle, ArrowLeft, Brain, Cpu } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { processQuestion, speak } from '../lib/voiceAssistant'
+import { processQuestion, askClaude, speak } from '../lib/voiceAssistant'
 
 type MessageRole = 'user' | 'assistant'
 interface Message { role: MessageRole; text: string; time: string }
 
 type Phase = 'idle' | 'listening' | 'thinking' | 'speaking'
+type AIMode = 'claude' | 'local'
 
 const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
 
@@ -16,6 +17,7 @@ export default function VoiceAssistant() {
   const [messages, setMessages] = useState<Message[]>([])
   const [transcript, setTranscript] = useState('')
   const [supported] = useState(() => !!SpeechRecognition)
+  const [aiMode, setAiMode] = useState<AIMode>('claude')
   const recognitionRef = useRef<any>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -31,15 +33,22 @@ export default function VoiceAssistant() {
     setMessages(prev => [...prev, { role, text, time: new Date().toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' }) }])
   }, [])
 
-  const handleAnswer = useCallback((question: string) => {
+  const handleAnswer = useCallback(async (question: string) => {
     setPhase('thinking')
-    setTimeout(() => {
-      const answer = processQuestion(question)
-      addMessage('assistant', answer)
-      setPhase('speaking')
-      speak(answer, () => setPhase('idle'))
-    }, 400)
-  }, [addMessage])
+    let answer: string
+    try {
+      if (aiMode === 'claude') {
+        answer = await askClaude(question)
+      } else {
+        throw new Error('local mode')
+      }
+    } catch {
+      answer = processQuestion(question)
+    }
+    addMessage('assistant', answer)
+    setPhase('speaking')
+    speak(answer, () => setPhase('idle'))
+  }, [addMessage, aiMode])
 
   const startListening = useCallback(() => {
     if (!SpeechRecognition) return
@@ -120,6 +129,14 @@ export default function VoiceAssistant() {
           </h1>
           <p className="text-xs text-slate-500">Pergunte sobre vendas, stock, caixa e mais</p>
         </div>
+        <button
+          onClick={() => setAiMode(m => m === 'claude' ? 'local' : 'claude')}
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition ${aiMode === 'claude' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}
+          title={aiMode === 'claude' ? 'Claude IA (online)' : 'Motor local (offline)'}
+        >
+          {aiMode === 'claude' ? <Brain size={14} /> : <Cpu size={14} />}
+          {aiMode === 'claude' ? 'Claude' : 'Local'}
+        </button>
         <button onClick={() => { addMessage('user', 'ajuda'); handleAnswer('ajuda') }}
           className="p-2 rounded-xl hover:bg-white/60 transition" title="Ajuda">
           <HelpCircle size={18} className="text-slate-400" />

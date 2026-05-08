@@ -32,8 +32,18 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis",     "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "requestedExecutionLevel": "asInvoker"
     },
@@ -44,7 +54,9 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Peixaria Khrismir",
-      "installerLanguages": ["pt_PT"],
+      "installerLanguages": [
+        "pt_PT"
+      ],
       "language": "2070"
     },
     "portable": {
@@ -52,6 +64,7 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.1",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-slot": "^1.2.4",
     "@supabase/supabase-js": "^2.100.1",
