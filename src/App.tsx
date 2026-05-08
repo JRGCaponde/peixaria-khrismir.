@@ -17,6 +17,7 @@ import Admin      from './pages/Admin'
 import Verify     from './pages/Verify'
 import Profile    from './pages/Profile'
 import CashFlow   from './pages/CashFlow'
+import VoiceAssistant from './pages/VoiceAssistant'
 import Activation from './pages/Activation'
 import StorePicker from './pages/StorePicker'
 
@@ -104,6 +105,7 @@ function AppInner() {
               {/* Admin */}
               <Route path="/admin/*"  element={<AdminRoute><Admin /></AdminRoute>} />
               <Route path="/cashflow" element={<StaffRoute><CashFlow /></StaffRoute>} />
+              <Route path="/assistente" element={<StaffRoute><VoiceAssistant /></StaffRoute>} />
 
               {/* Fallback */}
               <Route path="*" element={<Navigate to={isAuthenticated ? getHomeRoute() : '/'} replace />} />
