@@ -15,12 +15,37 @@ function ls<T>(key: string, fallback: T): T {
 function lsSet(key: string, v: any) { localStorage.setItem(key, JSON.stringify(v)) }
 
 
+// Chaves de negócio isoladas por loja — limpas quando a loja muda
+const STORE_BUSINESS_KEYS = [
+  'khrismir_products', 'khrismir_categories', 'khrismir_orders',
+  'khrismir_cashflow', 'khrismir_purchases', 'khrismir_suppliers',
+  'khrismir_delivery_zones', 'khrismir_promos', 'khrismir_returns',
+  'khrismir_loyalty', 'khrismir_shifts', 'khrismir_settings',
+  'cf_movements', 'cf_accounts', 'cf_categories', 'cf_deleted_ids',
+  'khrismir_auto_synced',
+]
+const LAST_PULL_STORE_KEY = 'khrismir_last_pull_store'
+
 // ── PULL: Supabase → localStorage ─────────────────────────────
 export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
 
   try {
     const sid = getCurrentStoreId()
+
+    // ── Detecção de mudança de loja ──────────────────────────────────────────
+    // pullAll() é sempre chamado após login — é o ponto garantido para detectar
+    // quando a loja mudou e limpar os dados da loja anterior do localStorage.
+    if (sid) {
+      const lastSid = localStorage.getItem(LAST_PULL_STORE_KEY)
+      if (lastSid && lastSid !== sid) {
+        // Loja diferente — limpa todos os dados de negócio do dispositivo
+        STORE_BUSINESS_KEYS.forEach(k => localStorage.removeItem(k))
+      }
+      localStorage.setItem(LAST_PULL_STORE_KEY, sid)
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const sf = (q: any) => sid ? q.eq('store_id', sid) : q
 
     const [cat, prod, ord, cf, pur, zones, promos, sets, sup, ret, loy, shifts, profiles] = await Promise.all([
@@ -50,23 +75,28 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       sf(supabase.from('cf_movements').select('*').order('created_at', { ascending: false })),
       supabase.from('stores').select('*').eq('active', true).order('name'),
     ])
-    if (cfAccounts.data && cfAccounts.data.length > 0)    lsSet('cf_accounts',    cfAccounts.data)
-    if (cfCategories.data && cfCategories.data.length > 0) lsSet('cf_categories', cfCategories.data)
-    if (cfMovements.data && cfMovements.data.length > 0)   lsSet('cf_movements',  cfMovements.data.map((m: any) => ({ ...m, accountTo: m.account_to })))
-    if (storesData.data)  lsSet('khrismir_stores', storesData.data)
+
+    // SEMPRE escreve no localStorage — mesmo arrays vazios limpam dados da loja anterior.
+    // Nunca usar "length > 0" aqui: uma loja nova com 0 movimentos deve limpar os
+    // movimentos que ficaram de outra loja neste dispositivo.
+    if (cfAccounts.data)   lsSet('cf_accounts',   cfAccounts.data)
+    if (cfCategories.data) lsSet('cf_categories', cfCategories.data)
+    if (cfMovements.data)  lsSet('cf_movements',  cfMovements.data.map((m: any) => ({ ...m, accountTo: m.account_to })))
+    if (storesData.data)   lsSet('khrismir_stores', storesData.data)
 
     if (cat.data)    lsSet('khrismir_categories', cat.data)
     if (prod.data)   lsSet('khrismir_products', prod.data)
     if (ord.data) {
       const fromSupabase = ord.data.map(({ order_items, ...o }: any) => ({ ...o, items: order_items ?? [] }))
-      // Preservar pedidos locais que ainda não chegaram ao Supabase
-      // Filtra por id E por order_number — evita duplicados quando o mesmo pedido
-      // foi criado offline em dois dispositivos com IDs diferentes mas mesmo número
+      // Preservar pedidos locais que ainda não chegaram ao Supabase (apenas da mesma loja)
       const existing: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_orders') || '[]') } catch { return [] } })()
-      const supabaseIds    = new Set(fromSupabase.map((o: any) => o.id))
+      const supabaseIds     = new Set(fromSupabase.map((o: any) => o.id))
       const supabaseNumbers = new Set(fromSupabase.map((o: any) => o.order_number))
-      const localOnly = existing.filter((o: any) => !supabaseIds.has(o.id) && !supabaseNumbers.has(o.order_number))
-      // Desduplicar localOnly por order_number (limpa corrupção prévia no localStorage)
+      const localOnly = existing.filter((o: any) =>
+        !supabaseIds.has(o.id) && !supabaseNumbers.has(o.order_number) &&
+        // Só preserva pedidos locais da mesma loja (ou sem store_id se não há filtro)
+        (!sid || !o.store_id || o.store_id === sid)
+      )
       const seenNums = new Set<string>()
       const cleanLocal = localOnly.filter((o: any) => {
         if (!o.order_number || seenNums.has(o.order_number)) return false
@@ -76,14 +106,29 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       lsSet('khrismir_orders', [...cleanLocal, ...fromSupabase])
     }
     if (cf.data)     lsSet('khrismir_cashflow', cf.data)
-    if (pur.data)    lsSet('khrismir_purchases', pur.data)
+
+    // Purchases — merge local + Supabase (preserva locais que ainda não chegaram à cloud)
+    if (pur.data) {
+      const localPur: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_purchases') || '[]') } catch { return [] } })()
+      const sbPurIds = new Set(pur.data.map((p: any) => p.id))
+      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id))
+      lsSet('khrismir_purchases', [...localOnlyPur, ...pur.data])
+    }
+
     if (zones.data)  lsSet('khrismir_delivery_zones', zones.data)
     if (promos.data) lsSet('khrismir_promos', promos.data)
     if (sets.data)   lsSet('khrismir_settings', sets.data)
     if (sup.data)    lsSet('khrismir_suppliers', sup.data)
     if (ret.data)    lsSet('khrismir_returns', ret.data)
     if (loy.data)    lsSet('khrismir_loyalty', loy.data)
-    if (shifts.data) lsSet('khrismir_shifts', shifts.data)
+
+    // Shifts — merge local + Supabase (preserva turnos locais que ainda não chegaram à cloud)
+    if (shifts.data) {
+      const localShifts: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_shifts') || '[]') } catch { return [] } })()
+      const sbShiftIds = new Set(shifts.data.map((s: any) => s.id))
+      const localOnlyShifts = localShifts.filter((s: any) => s.id && !sbShiftIds.has(s.id))
+      lsSet('khrismir_shifts', [...localOnlyShifts, ...shifts.data])
+    }
     if (profiles.data && profiles.data.length > 0) {
       // Merge com clientes locais (sem sobrescrever contas de funcionários)
       const local: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_clients') || '[]') } catch { return [] } })()
@@ -91,6 +136,9 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       const localOnly = local.filter((c: any) => !supabaseIds.has(c.id))
       lsSet('khrismir_clients', [...localOnly, ...profiles.data])
     }
+
+    // Notifica todos os componentes que os dados foram actualizados
+    window.dispatchEvent(new CustomEvent('khrismir:sync', { detail: { table: 'pullAll' } }))
 
     return { ok: true }
   } catch (e: any) {
@@ -206,6 +254,7 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
         discount_amount: o.discount_amount ?? 0, subtotal: o.subtotal ?? o.total ?? 0,
         total: o.total ?? 0, notes: o.notes ?? '',
         created_at: o.created_at, updated_at: o.updated_at,
+        store_id: sid,
       }))
 
       const { error: oe } = await supabase!.from('orders').upsert(orderRows, { onConflict: 'id' })
@@ -408,13 +457,14 @@ export async function syncCashFlow(entries: CashFlow[]) {
 }
 
 export async function syncPurchases(purchases: any[]) {
-  if (!isSupabaseReady() || !supabase) return
+  if (!isSupabaseReady() || !supabase || !purchases.length) return
   const sid = getCurrentStoreId()
-  supabase.from('purchases').upsert(purchases.map(p => ({
+  const { error } = await supabase.from('purchases').upsert(purchases.map(p => ({
     id: p.id, product_id: p.product_id ?? '', product_name: p.product_name ?? '',
     quantity: p.quantity ?? 0, unit_price: p.unit_price ?? 0, total_price: p.total_price ?? 0,
     supplier: p.supplier ?? '', created_at: p.created_at, store_id: sid,
-  })), { onConflict: 'id' }).then()
+  })), { onConflict: 'id' })
+  if (error) console.error('[syncPurchases]', error.message)
 }
 
 export async function syncSettings(settings: StoreSettings) {
@@ -458,6 +508,17 @@ export async function deleteStore(id: string) {
   supabase.from('stores').update({ active: false }).eq('id', id).then()
 }
 
+/**
+ * Apaga permanentemente uma loja do Supabase.
+ * Retorna { ok, error } para o chamador tratar.
+ */
+export async function deleteStorePermanent(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
+  const { error } = await supabase.from('stores').delete().eq('id', id)
+  if (error) return { ok: false, error: error.message }
+  return { ok: true }
+}
+
 export async function syncDeliveryZones(zones: DeliveryZone[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
@@ -489,9 +550,16 @@ export async function syncLoyalty(transactions: any[]) {
 }
 
 export async function syncShifts(shifts: any[]) {
-  if (!isSupabaseReady() || !supabase) return
+  if (!isSupabaseReady() || !supabase || !shifts.length) return
   const sid = getCurrentStoreId()
-  supabase.from('shift_sessions').upsert(shifts.map(s => ({ ...s, store_id: sid })), { onConflict: 'id' }).then()
+  const { error } = await supabase.from('shift_sessions').upsert(shifts.map(s => ({
+    id: s.id, opened_at: s.opened_at, closed_at: s.closed_at ?? null,
+    opening_balance: s.opening_balance ?? 0, closing_balance: s.closing_balance ?? null,
+    cash_counted: s.cash_counted ?? null, difference: s.difference ?? null,
+    opened_by: s.opened_by ?? '', closed_by: s.closed_by ?? null, notes: s.notes ?? '',
+    store_id: sid,
+  })), { onConflict: 'id' })
+  if (error) console.error('[syncShifts]', error.message)
 }
 
 // ── FLUXO DE CAIXA — novo sistema (cf_*) ─────────────────────

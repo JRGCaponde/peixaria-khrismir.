@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { LogIn, LogOut, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuthStore } from '../stores/useAuthStore'
@@ -20,6 +20,18 @@ export function TurnoTab({ movements }: { movements: CashMovement[] }) {
   const { user } = useAuthStore()
   const [shifts, setShifts] = useState<ShiftSession[]>(lsShifts)
   const [openShift, setOpenShift] = useState<ShiftSession | null>(() => getOpenShift())
+
+  // Re-carrega turnos quando o sync actualiza o localStorage
+  const reload = useCallback(() => {
+    const fresh = lsShifts()
+    setShifts(fresh)
+    setOpenShift(fresh.find(s => !s.closed_at) || null)
+  }, [])
+
+  useEffect(() => {
+    window.addEventListener('khrismir:sync', reload)
+    return () => window.removeEventListener('khrismir:sync', reload)
+  }, [reload])
   const [openingBalance, setOpeningBalance] = useState('')
   const [cashCounted, setCashCounted] = useState('')
   const [closeNotes, setCloseNotes] = useState('')
