@@ -87,7 +87,7 @@ function AppInner() {
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-cyan-50">
         <StoreGuard>
           <Header />
-          <main className="container mx-auto py-6 px-4 md:px-8">
+          <main className="container mx-auto py-3 sm:py-6 px-3 sm:px-4 md:px-8">
             <Routes>
               {/* Públicas */}
               <Route path="/"       element={<Landing />} />

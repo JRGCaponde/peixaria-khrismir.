@@ -477,7 +477,7 @@ function Movements({ movements, setMovements, accounts, setAccounts, categories 
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Pesquisar..." className="pl-9 pr-4 py-2 border rounded-lg text-sm w-48" />
+              placeholder="Pesquisar..." className="pl-9 pr-4 py-2 border rounded-lg text-sm w-full sm:w-48" />
           </div>
           <select value={filterType} onChange={e => setFilterType(e.target.value)} className="px-3 py-2 border rounded-lg text-sm">
             <option value="all">Todos os tipos</option>
@@ -577,7 +577,7 @@ function Movements({ movements, setMovements, accounts, setAccounts, categories 
 
       {/* List */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b bg-gray-50 flex items-center justify-between">
+        <div className="px-3 sm:px-6 py-3 sm:py-4 border-b bg-gray-50 flex items-center justify-between">
           <span className="text-sm font-medium text-gray-700">{visible.length} movimento{visible.length !== 1 ? 's' : ''}</span>
         </div>
         {visible.length === 0 ? (
@@ -585,7 +585,7 @@ function Movements({ movements, setMovements, accounts, setAccounts, categories 
         ) : (
           <div className="divide-y">
             {visible.map(m => (
-              <div key={m.id} className="flex items-center gap-4 px-6 py-4 hover:bg-gray-50">
+              <div key={m.id} className="flex items-center gap-2 sm:gap-4 px-3 sm:px-6 py-3 sm:py-4 hover:bg-gray-50">
                 <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${
                   m.type === 'income' ? 'bg-green-100' : m.type === 'expense' ? 'bg-red-100' : 'bg-blue-100'
                 }`}>
@@ -617,7 +617,7 @@ function Movements({ movements, setMovements, accounts, setAccounts, categories 
                   </button>
                 )}
                 {accounts.length > 1 && m.type !== 'transfer' && (
-                  <div className="flex-shrink-0 relative group/move">
+                  <div className="flex-shrink-0 relative group/move hidden sm:block">
                     <select
                       value={m.account}
                       onChange={e => {

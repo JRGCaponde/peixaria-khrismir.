@@ -121,60 +121,66 @@ export default function Header() {
 
           {/* Mobile Menu Button */}
           <button
-            className="md:hidden"
+            className="md:hidden p-2 -mr-2 rounded-lg hover:bg-white/10 transition"
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
           >
-            {mobileMenuOpen ? <X /> : <Menu />}
+            {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
           </button>
         </div>
 
         {/* Mobile Nav */}
         {mobileMenuOpen && (
-          <nav className="md:hidden mt-4 pb-4 space-y-2">
-            <Link to="/verify" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+          <nav className="md:hidden mt-4 pb-4 space-y-1 border-t border-white/20 pt-4">
+            <Link to="/verify" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
               Verificar Pedido
             </Link>
             {isAuthenticated ? (
               <>
                 {user?.role !== 'client' && (
                   <>
-                    <Link to="/pos" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+                    <Link to="/pos" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       PDV
                     </Link>
-                    <Link to="/cashflow" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+                    <Link to="/cashflow" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       Fluxo de Caixa
                     </Link>
                     {user?.role === 'admin' && (
-                      <Link to="/admin" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+                      <Link to="/admin" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                         Admin
                       </Link>
                     )}
-                    <Link to="/casa" className="flex items-center gap-2 py-2" onClick={() => setMobileMenuOpen(false)}>
+                    <Link to="/casa" className="flex items-center gap-2 py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       <Home className="w-4 h-4" /> Casa Inteligente
                     </Link>
-                    <Link to="/assistente" className="flex items-center gap-2 py-2" onClick={() => setMobileMenuOpen(false)}>
+                    <Link to="/assistente" className="flex items-center gap-2 py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       <Mic className="w-4 h-4" /> Assistente de Voz
                     </Link>
                   </>
                 )}
                 {user?.role === 'client' && (
                   <>
-                    <Link to="/catalog" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+                    <Link to="/catalog" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       Catálogo
                     </Link>
-                    <Link to="/orders" className="block py-2" onClick={() => setMobileMenuOpen(false)}>
+                    <Link to="/orders" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       Meus Pedidos
                     </Link>
                   </>
                 )}
-                <button onClick={handleLogout} className="block py-2 text-red-300">
-                  Sair
-                </button>
+                <div className="border-t border-white/20 mt-2 pt-2">
+                  <div className="flex items-center gap-2 px-3 py-2 text-sm text-cyan-100">
+                    <User className="w-4 h-4" />
+                    <span>{user?.full_name}</span>
+                  </div>
+                  <button onClick={handleLogout} className="w-full text-left py-3 px-3 rounded-lg hover:bg-red-500/20 transition text-sm font-medium text-red-200 flex items-center gap-2">
+                    <LogOut className="w-4 h-4" /> Sair
+                  </button>
+                </div>
               </>
             ) : (
               <Link
                 to="/auth"
-                className="block py-2 bg-white text-cyan-700 px-4 rounded text-center"
+                className="block py-3 bg-white text-cyan-700 px-4 rounded-xl text-center font-semibold mt-2"
                 onClick={() => setMobileMenuOpen(false)}
               >
                 Entrar

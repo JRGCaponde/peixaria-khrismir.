@@ -81,7 +81,20 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     // movimentos que ficaram de outra loja neste dispositivo.
     if (cfAccounts.data)   lsSet('cf_accounts',   cfAccounts.data)
     if (cfCategories.data) lsSet('cf_categories', cfCategories.data)
-    if (cfMovements.data)  lsSet('cf_movements',  cfMovements.data.map((m: any) => ({ ...m, accountTo: m.account_to })))
+
+    // cf_movements — merge local + Supabase (preserva movimentos locais não sincronizados)
+    if (cfMovements.data) {
+      const fromSb = cfMovements.data.map((m: any) => ({ ...m, accountTo: m.account_to }))
+      const localMvs: any[] = (() => { try { return JSON.parse(localStorage.getItem('cf_movements') || '[]') } catch { return [] } })()
+      const sbIds = new Set(fromSb.map((m: any) => m.id))
+      // Preserva movimentos locais que ainda não chegaram ao Supabase (ex: vendas POS recentes)
+      const localOnly = localMvs.filter((m: any) => m.id && !sbIds.has(m.id))
+      const merged = [...localOnly, ...fromSb].sort((a: any, b: any) =>
+        new Date(b.created_at || b.date).getTime() - new Date(a.created_at || a.date).getTime()
+      )
+      lsSet('cf_movements', merged)
+    }
+
     if (storesData.data)   lsSet('khrismir_stores', storesData.data)
 
     if (cat.data)    lsSet('khrismir_categories', cat.data)

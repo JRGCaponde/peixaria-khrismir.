@@ -4,6 +4,7 @@
  */
 
 import { format } from 'date-fns'
+import { syncCfMovements, syncCfAccounts } from './sync'
 
 interface CFMovement {
   id: string
@@ -86,13 +87,18 @@ export function registerSaleMovement(
     created_at: new Date().toISOString(),
   }
 
-  saveMovements([movement, ...existing])
+  const updated = [movement, ...existing]
+  saveMovements(updated)
 
   const idx = accounts.findIndex(a => a.name === accountName)
   if (idx !== -1) {
     accounts[idx].balance += amount
     saveAccounts(accounts)
+    syncCfAccounts(accounts)
   }
+
+  // Sincroniza o novo movimento para o Supabase imediatamente
+  syncCfMovements([movement])
 }
 
 /** Regista uma compra/entrada de stock no Fluxo de Caixa (usa ID determinístico baseado no purchaseId) */
@@ -121,13 +127,18 @@ export function registerPurchaseMovement(
     created_at: new Date().toISOString(),
   }
 
-  saveMovements([movement, ...existing])
+  const updated = [movement, ...existing]
+  saveMovements(updated)
 
   const idx = accounts.findIndex(a => a.name === account)
   if (idx !== -1) {
     accounts[idx].balance -= amount
     saveAccounts(accounts)
+    syncCfAccounts(accounts)
   }
+
+  // Sincroniza o novo movimento para o Supabase imediatamente
+  syncCfMovements([movement])
 }
 
 /**
@@ -269,6 +280,8 @@ export function syncAllData(): void {
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     )
     saveMovements(merged)
+    // Sincroniza os novos movimentos para o Supabase
+    syncCfMovements(toAdd)
   }
 }
 

@@ -105,40 +105,40 @@ export default function Verify() {
               </div>
             </div>
 
-            <div className="space-y-4">
-              <div className="flex justify-between items-center py-3 border-b">
-                <span className="text-gray-600">Número do Pedido</span>
-                <span className="font-bold text-lg">{order.order_number}</span>
-              </div>
-              
-              <div className="flex justify-between items-center py-3 border-b">
-                <span className="text-gray-600">Data</span>
-                <span>{new Date(order.created_at).toLocaleString('pt-AO')}</span>
-              </div>
-              
-              <div className="flex justify-between items-center py-3 border-b">
-                <span className="text-gray-600">Tipo de Entrega</span>
-                <span>{order.delivery_type === 'retirada' ? '🏪 Retirada na Loja' : '🚚 Delivery'}</span>
-              </div>
-              
-              <div className="flex justify-between items-center py-3 border-b">
-                <span className="text-gray-600">Pagamento</span>
-                <span className="capitalize">{order.payment_type}</span>
+            <div className="space-y-3 sm:space-y-4">
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-2 sm:py-3 border-b gap-0.5">
+                <span className="text-gray-600 text-sm">Número do Pedido</span>
+                <span className="font-bold text-base sm:text-lg">{order.order_number}</span>
               </div>
 
-              <div className="bg-gray-50 rounded-lg p-4 mt-4">
-                <h4 className="font-semibold mb-2">Itens do Pedido</h4>
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-2 sm:py-3 border-b gap-0.5">
+                <span className="text-gray-600 text-sm">Data</span>
+                <span className="text-sm sm:text-base">{new Date(order.created_at).toLocaleString('pt-AO')}</span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-2 sm:py-3 border-b gap-0.5">
+                <span className="text-gray-600 text-sm">Tipo de Entrega</span>
+                <span className="text-sm sm:text-base">{order.delivery_type === 'retirada' ? '🏪 Retirada na Loja' : '🚚 Delivery'}</span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center py-2 sm:py-3 border-b gap-0.5">
+                <span className="text-gray-600 text-sm">Pagamento</span>
+                <span className="capitalize text-sm sm:text-base">{order.payment_type}</span>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-3 sm:p-4 mt-3 sm:mt-4">
+                <h4 className="font-semibold mb-2 text-sm sm:text-base">Itens do Pedido</h4>
                 {order.items.map((item, i) => (
-                  <div key={i} className="flex justify-between text-sm py-1">
-                    <span>{item.product_name} ({item.preparation}) x{item.quantity}</span>
-                    <span className="font-medium">{Number(item.total_price).toLocaleString('pt-AO')} AOA</span>
+                  <div key={i} className="flex justify-between text-xs sm:text-sm py-1.5 gap-2">
+                    <span className="min-w-0">{item.product_name} ({item.preparation}) x{item.quantity}</span>
+                    <span className="font-medium whitespace-nowrap">{Number(item.total_price).toLocaleString('pt-AO')} AOA</span>
                   </div>
                 ))}
               </div>
 
-              <div className="flex justify-between items-center pt-4">
-                <span className="text-lg font-semibold">Total</span>
-                <span className="text-2xl font-bold text-cyan-600">{Number(order.total).toLocaleString('pt-AO')} AOA</span>
+              <div className="flex justify-between items-center pt-3 sm:pt-4">
+                <span className="text-base sm:text-lg font-semibold">Total</span>
+                <span className="text-xl sm:text-2xl font-bold text-cyan-600">{Number(order.total).toLocaleString('pt-AO')} AOA</span>
               </div>
             </div>
 

@@ -5,20 +5,9 @@ import { toast } from 'sonner'
 import type { Product, Category, PreparationType } from '../types/database'
 import { pullAll } from '../lib/sync'
 
-const initialCategories: Category[] = [
-  { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
-  { id: '2', name: 'Mariscos',       description: 'Camarão, polvo, lulas'  },
-  { id: '3', name: 'Peixes Grandes', description: 'Peixes de maior porte'  },
-]
-
-const initialProducts: Product[] = [
-  { id: '1', name: 'Sardinha',       price: 1500, unit: 'kg', stock_quantity: 50, min_stock: 10, allow_whole: true,  allow_clean: true,  allow_fillet: false, allow_steak: false, category_id: '1', image_url: '' },
-  { id: '2', name: 'Atum',           price: 2500, unit: 'kg', stock_quantity: 30, min_stock: 5,  allow_whole: true,  allow_clean: true,  allow_fillet: true,  allow_steak: true,  category_id: '1', image_url: '' },
-  { id: '3', name: 'Pargo',          price: 3000, unit: 'kg', stock_quantity: 20, min_stock: 5,  allow_whole: true,  allow_clean: true,  allow_fillet: true,  allow_steak: true,  category_id: '1', image_url: '' },
-  { id: '4', name: 'Camarão Grande', price: 4500, unit: 'kg', stock_quantity: 15, min_stock: 3,  allow_whole: true,  allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-  { id: '5', name: 'Polvo',          price: 5000, unit: 'kg', stock_quantity: 10, min_stock: 2,  allow_whole: true,  allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-  { id: '6', name: 'Lingueirão',     price: 3500, unit: 'kg', stock_quantity: 8,  min_stock: 2,  allow_whole: true,  allow_clean: true,  allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-]
+// Sem dados fictícios — carrega apenas do localStorage / Supabase
+const initialCategories: Category[] = []
+const initialProducts: Product[] = []
 
 interface CartItem extends Product {
   quantity:    number
@@ -117,7 +106,7 @@ export default function Catalog() {
             <p className="text-gray-500 mt-4">Nenhum produto encontrado</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pb-24 lg:pb-0">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 pb-24 lg:pb-0">
             {filteredProducts.map(product => <ProductCard key={product.id} product={product} onAdd={addToCart} />)}
           </div>
         )}
@@ -125,7 +114,7 @@ export default function Catalog() {
 
       {showCart && <div className="lg:hidden fixed inset-0 bg-black/50 z-30" onClick={() => setShowCart(false)} />}
 
-      <div className={`lg:w-96 ${showCart ? 'fixed inset-y-0 right-0 z-40 w-80 shadow-2xl' : 'hidden lg:block'}`}>
+      <div className={`lg:w-96 ${showCart ? 'fixed inset-y-0 right-0 z-40 w-[85vw] sm:w-80 shadow-2xl' : 'hidden lg:block'}`}>
         <div className="bg-white h-full lg:h-auto rounded-none lg:rounded-xl shadow-lg p-4 lg:sticky lg:top-4 flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-bold flex items-center gap-2">
@@ -148,10 +137,10 @@ export default function Catalog() {
                       <p className="font-medium truncate">{item.name}</p>
                       <p className="text-xs text-gray-500 capitalize">{item.preparation}</p>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => updateQuantity(item.id, item.preparation, -1)} className="w-6 h-6 bg-gray-200 rounded-full flex items-center justify-center hover:bg-gray-300"><Minus className="w-3 h-3" /></button>
-                      <span className="w-6 text-center text-sm font-bold">{item.quantity}</span>
-                      <button onClick={() => updateQuantity(item.id, item.preparation, 1)} className="w-6 h-6 bg-cyan-600 text-white rounded-full flex items-center justify-center hover:bg-cyan-700"><Plus className="w-3 h-3" /></button>
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => updateQuantity(item.id, item.preparation, -1)} className="w-8 h-8 sm:w-7 sm:h-7 bg-gray-200 rounded-full flex items-center justify-center hover:bg-gray-300 text-lg font-bold"><Minus className="w-3.5 h-3.5" /></button>
+                      <span className="w-7 text-center text-sm font-bold">{item.quantity}</span>
+                      <button onClick={() => updateQuantity(item.id, item.preparation, 1)} className="w-8 h-8 sm:w-7 sm:h-7 bg-cyan-600 text-white rounded-full flex items-center justify-center hover:bg-cyan-700 text-lg font-bold"><Plus className="w-3.5 h-3.5" /></button>
                     </div>
                     <p className="font-bold text-sm ml-2 whitespace-nowrap">{Number(item.price * item.quantity).toLocaleString('pt-AO')} AOA</p>
                   </div>

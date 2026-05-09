@@ -12,20 +12,9 @@ import { pullAll, syncOrderStatus, syncOrder, syncProductStock, syncCashFlow } f
 import { notifyDataChange } from '../lib/realtime'
 import { isSupabaseReady } from '../lib/supabase'
 
-const initialCategories: Category[] = [
-  { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
-  { id: '2', name: 'Mariscos', description: 'Camarão, polvo, lulas' },
-  { id: '3', name: 'Peixes Grandes', description: 'Peixes de maior porte' },
-]
-
-const initialProducts: Product[] = [
-  { id: '1', name: 'Sardinha', price: 1500, unit: 'kg', stock_quantity: 50, min_stock: 10, allow_whole: true, allow_clean: true, allow_fillet: false, allow_steak: false, category_id: '1', image_url: '' },
-  { id: '2', name: 'Atum', price: 2500, unit: 'kg', stock_quantity: 30, min_stock: 5, allow_whole: true, allow_clean: true, allow_fillet: true, allow_steak: true, category_id: '1', image_url: '' },
-  { id: '3', name: 'Pargo', price: 3000, unit: 'kg', stock_quantity: 20, min_stock: 5, allow_whole: true, allow_clean: true, allow_fillet: true, allow_steak: true, category_id: '1', image_url: '' },
-  { id: '4', name: 'Camarão Grande', price: 4500, unit: 'kg', stock_quantity: 15, min_stock: 3, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-  { id: '5', name: 'Polvo', price: 5000, unit: 'kg', stock_quantity: 10, min_stock: 2, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-  { id: '6', name: 'Lingueirão', price: 3500, unit: 'kg', stock_quantity: 8, min_stock: 2, allow_whole: true, allow_clean: true, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-]
+// Sem dados fictícios — carrega apenas do localStorage / Supabase
+const initialCategories: Category[] = []
+const initialProducts: Product[] = []
 
 interface POSCartItem extends CartItem {
   weight: number
@@ -154,8 +143,23 @@ export default function POS() {
 
   const updateQuantity = (idx: number, delta: number) => {
     const newCart = [...cart]
-    newCart[idx].quantity = Math.max(1, newCart[idx].quantity + delta)
-    newCart[idx].total_price = newCart[idx].weight * newCart[idx].price * newCart[idx].quantity
+    const item = newCart[idx]
+    const newQty = Math.max(1, item.quantity + delta)
+
+    // Verifica stock disponível (exclui o item actual do cálculo)
+    if (delta > 0) {
+      const otherInCart = cart
+        .filter((c, i) => i !== idx && c.id === item.id)
+        .reduce((sum, c) => sum + c.weight * c.quantity, 0)
+      const product = products.find(p => p.id === item.id)
+      const stockAvail = (product?.stock_quantity ?? 0) - otherInCart
+      if (item.weight * newQty > stockAvail) {
+        toast.error(`Stock insuficiente! Disponível: ${(stockAvail / item.weight).toFixed(0)} unidade(s)`)
+        return
+      }
+    }
+
+    newCart[idx] = { ...item, quantity: newQty, total_price: item.weight * item.price * newQty }
     saveCart(newCart)
   }
 
@@ -216,7 +220,7 @@ export default function POS() {
     orders.unshift(newOrder)
     localStorage.setItem('khrismir_orders', JSON.stringify(orders))
 
-    const storedProducts = JSON.parse(localStorage.getItem('khrismir_products') || JSON.stringify(initialProducts))
+    const storedProducts = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
     cart.forEach(cartItem => {
       const idx = storedProducts.findIndex((p: Product) => p.id === cartItem.id)
       if (idx !== -1) storedProducts[idx].stock_quantity = Math.max(0, storedProducts[idx].stock_quantity - cartItem.weight * cartItem.quantity)
@@ -393,7 +397,7 @@ export default function POS() {
         </div>
 
         {/* Products */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 overflow-y-auto flex-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 overflow-y-auto flex-1">
           {filteredProducts.map(product => (
             <button
               key={product.id}
@@ -444,9 +448,9 @@ export default function POS() {
                   </div>
                   <div className="flex justify-between items-center mt-2">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => updateQuantity(idx, -1)} className="w-6 h-6 bg-gray-200 rounded-full">-</button>
+                      <button onClick={() => updateQuantity(idx, -1)} className="w-9 h-9 sm:w-7 sm:h-7 bg-gray-200 rounded-full text-lg font-bold flex items-center justify-center">-</button>
                       <span className="text-sm">{item.quantity}x</span>
-                      <button onClick={() => updateQuantity(idx, 1)} className="w-6 h-6 bg-gray-200 rounded-full">+</button>
+                      <button onClick={() => updateQuantity(idx, 1)} className="w-9 h-9 sm:w-7 sm:h-7 bg-gray-200 rounded-full text-lg font-bold flex items-center justify-center">+</button>
                     </div>
                     <span className="font-bold">{Number(item.weight * item.price * item.quantity).toLocaleString('pt-AO')} AOA</span>
                   </div>
@@ -541,7 +545,7 @@ export default function POS() {
                 <label className="block text-sm font-medium mb-2">Peso (kg)</label>
                 <div className="flex items-center gap-4">
                   <button
-                    onClick={() => setWeight(Math.max(0.1, weight - 0.1))}
+                    onClick={() => setWeight(Math.max(0.1, parseFloat((weight - 0.1).toFixed(2))))}
                     className="w-12 h-12 bg-gray-100 rounded-lg text-2xl font-bold"
                   >
                     -
@@ -549,13 +553,13 @@ export default function POS() {
                   <input
                     type="number"
                     value={weight}
-                    onChange={e => setWeight(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
+                    onChange={e => setWeight(Math.max(0.1, parseFloat(parseFloat(e.target.value).toFixed(2)) || 0.1))}
                     step="0.1"
                     min="0.1"
                     className="flex-1 text-center text-3xl font-bold border-2 border-cyan-600 rounded-lg py-2"
                   />
                   <button
-                    onClick={() => setWeight(weight + 0.1)}
+                    onClick={() => setWeight(parseFloat((weight + 0.1).toFixed(2)))}
                     className="w-12 h-12 bg-gray-100 rounded-lg text-2xl font-bold"
                   >
                     +

@@ -166,23 +166,23 @@ export default function Cart() {
         {/* Lista de itens */}
         <div className="lg:col-span-2 space-y-4">
           {cart.map((item, idx) => (
-            <div key={idx} className="bg-white rounded-xl shadow-lg p-4 flex gap-4">
-              <div className="w-20 h-20 bg-gradient-to-br from-cyan-100 to-blue-100 rounded-lg flex items-center justify-center text-4xl flex-shrink-0">
+            <div key={idx} className="bg-white rounded-xl shadow-lg p-3 sm:p-4 flex gap-3 sm:gap-4">
+              <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-cyan-100 to-blue-100 rounded-lg flex items-center justify-center text-3xl sm:text-4xl flex-shrink-0">
                 {item.image_url ? <img src={item.image_url} alt={item.name} className="w-full h-full object-cover rounded-lg" /> : '🐟'}
               </div>
               <div className="flex-1 min-w-0">
-                <h3 className="font-bold truncate">{item.name}</h3>
-                <p className="text-sm text-gray-500 capitalize">{item.preparation}</p>
-                <p className="text-cyan-600 font-bold">{Number(item.price).toLocaleString('pt-AO')} AOA/{item.unit}</p>
+                <h3 className="font-bold truncate text-sm sm:text-base">{item.name}</h3>
+                <p className="text-xs sm:text-sm text-gray-500 capitalize">{item.preparation}</p>
+                <p className="text-cyan-600 font-bold text-sm sm:text-base">{Number(item.price).toLocaleString('pt-AO')} AOA/{item.unit}</p>
               </div>
-              <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                <button onClick={() => removeItem(idx)} className="text-red-400 hover:text-red-600 transition"><Trash2 className="w-5 h-5" /></button>
-                <div className="flex items-center gap-2">
-                  <button onClick={() => updateQuantity(idx, -1)} className="w-8 h-8 bg-gray-200 rounded-full hover:bg-gray-300 transition flex items-center justify-center"><Minus className="w-4 h-4" /></button>
-                  <span className="w-8 text-center font-bold">{item.quantity}</span>
-                  <button onClick={() => updateQuantity(idx, 1)} className="w-8 h-8 bg-cyan-600 text-white rounded-full hover:bg-cyan-700 transition flex items-center justify-center"><Plus className="w-4 h-4" /></button>
+              <div className="flex flex-col items-end gap-1.5 sm:gap-2 flex-shrink-0">
+                <button onClick={() => removeItem(idx)} className="text-red-400 hover:text-red-600 transition p-1"><Trash2 className="w-4 h-4 sm:w-5 sm:h-5" /></button>
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <button onClick={() => updateQuantity(idx, -1)} className="w-9 h-9 sm:w-8 sm:h-8 bg-gray-200 rounded-full hover:bg-gray-300 transition flex items-center justify-center"><Minus className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
+                  <span className="w-7 text-center font-bold text-sm">{item.quantity}</span>
+                  <button onClick={() => updateQuantity(idx, 1)} className="w-9 h-9 sm:w-8 sm:h-8 bg-cyan-600 text-white rounded-full hover:bg-cyan-700 transition flex items-center justify-center"><Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" /></button>
                 </div>
-                <p className="font-bold text-sm">{Number(item.price * item.quantity).toLocaleString('pt-AO')} AOA</p>
+                <p className="font-bold text-xs sm:text-sm">{Number(item.price * item.quantity).toLocaleString('pt-AO')} AOA</p>
               </div>
             </div>
           ))}

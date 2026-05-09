@@ -127,31 +127,31 @@ export default function Orders() {
                   )}
                 </div>
 
-                <div className="border-t mt-4 pt-4 flex justify-between items-center flex-wrap gap-3">
+                <div className="border-t mt-4 pt-4 space-y-3 sm:space-y-0 sm:flex sm:justify-between sm:items-center sm:flex-wrap sm:gap-3">
                   <div className="text-sm text-gray-600">
                     <p>{order.delivery_type === 'retirada' ? '🏪 Retirada na loja' : '🚚 Entrega a domicílio'}</p>
                     <p>Pagamento: {order.payment_type}</p>
                   </div>
-                  <div className="flex items-center gap-2 flex-wrap">
+                  <div className="grid grid-cols-2 sm:flex gap-2 sm:items-center sm:flex-wrap">
                     <button onClick={() => printReceipt(order, settings)}
-                      className="flex items-center gap-2 px-3 py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition">
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-gray-100 text-gray-700 rounded-xl text-sm font-medium hover:bg-gray-200 transition">
                       <Printer className="w-4 h-4" /> Talão
                     </button>
                     <button onClick={() => printInvoice(order, settings)}
-                      className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-700 rounded-xl text-sm font-medium hover:bg-blue-100 transition">
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-blue-50 text-blue-700 rounded-xl text-sm font-medium hover:bg-blue-100 transition">
                       <Printer className="w-4 h-4" /> A4
                     </button>
                     <button onClick={() => printBusinessInvoice(order, settings)}
-                      className="flex items-center gap-2 px-3 py-2 bg-amber-50 text-amber-700 rounded-xl text-sm font-medium hover:bg-amber-100 transition">
+                      className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-amber-50 text-amber-700 rounded-xl text-sm font-medium hover:bg-amber-100 transition">
                       <Printer className="w-4 h-4" /> Fatura AGT
                     </button>
                     {order.status !== 'entregue' && order.status !== 'cancelado' && (
                       <a href={getWhatsAppLink(order)} target="_blank" rel="noopener noreferrer"
-                        className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 transition">
+                        className="flex items-center justify-center gap-1.5 px-3 py-2.5 sm:py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 transition">
                         <MessageCircle className="w-4 h-4" /> WhatsApp
                       </a>
                     )}
-                    <div className="text-right">
+                    <div className="col-span-2 sm:col-span-1 text-right sm:text-right bg-cyan-50 sm:bg-transparent rounded-xl p-2 sm:p-0">
                       <p className="text-sm text-gray-500">Total</p>
                       <p className="text-xl font-bold text-cyan-600">{Number(order.total).toLocaleString('pt-AO')} AOA</p>
                     </div>

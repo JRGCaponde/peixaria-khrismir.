@@ -61,15 +61,15 @@ export default function Profile() {
   const badge = roleBadge[user?.role ?? 'client']
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-4 sm:space-y-6 px-1 sm:px-0">
       {/* Cabeçalho */}
-      <div className="bg-gradient-to-r from-cyan-700 to-blue-700 rounded-2xl p-6 text-white flex items-center gap-5">
-        <div className="w-16 h-16 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0">
-          <User className="w-8 h-8" />
+      <div className="bg-gradient-to-r from-cyan-700 to-blue-700 rounded-2xl p-4 sm:p-6 text-white flex flex-col sm:flex-row items-center sm:items-center gap-3 sm:gap-5 text-center sm:text-left">
+        <div className="w-14 h-14 sm:w-16 sm:h-16 bg-white/20 rounded-full flex items-center justify-center flex-shrink-0">
+          <User className="w-7 h-7 sm:w-8 sm:h-8" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold">{user?.full_name}</h1>
-          <p className="text-cyan-200">{user?.email}</p>
+          <h1 className="text-xl sm:text-2xl font-bold">{user?.full_name}</h1>
+          <p className="text-cyan-200 text-sm sm:text-base break-all">{user?.email}</p>
           <span className={`mt-1 inline-flex items-center gap-1 text-xs font-bold px-3 py-0.5 rounded-full ${badge.color}`}>
             <Shield className="w-3 h-3" /> {badge.label}
           </span>
@@ -77,7 +77,7 @@ export default function Profile() {
       </div>
 
       {/* Informações pessoais */}
-      <div className="bg-white rounded-2xl shadow-lg p-6">
+      <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-6">
         <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
           <User className="w-5 h-5 text-cyan-600" /> Informações Pessoais
         </h2>
@@ -121,7 +121,7 @@ export default function Profile() {
       </div>
 
       {/* Alterar senha */}
-      <div className="bg-white rounded-2xl shadow-lg p-6">
+      <div className="bg-white rounded-2xl shadow-lg p-4 sm:p-6">
         <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
           <Lock className="w-5 h-5 text-cyan-600" /> Alterar Senha
         </h2>

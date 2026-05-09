@@ -24,9 +24,9 @@ import { registerPurchaseMovement, getCashFlowSummary, syncAllData, migrateExist
 import {
   syncOrderStatus, pullAll, pushAll,
   syncProducts, syncCategories, syncDeliveryZones, syncPromos, syncSettings,
-  syncPurchases, clearAllData,
+  syncPurchases, syncSuppliers, clearAllData,
   deleteProduct, deleteCategory, deleteZone, deletePromo,
-  syncStore,
+  syncStore, deleteStorePermanent,
 } from '../lib/sync'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
@@ -45,15 +45,9 @@ const statusConfig: Record<OrderStatus, { label: string; color: string; next?: O
   cancelado:  { label: 'Cancelado',  color: 'bg-red-100 text-red-800'                            },
 }
 
-const initialCategories: Category[] = [
-  { id: '1', name: 'Pescado Fresco', description: 'Peixes frescos do dia' },
-  { id: '2', name: 'Mariscos',       description: 'Camarão, polvo, lulas'  },
-]
-
-const initialProducts: Product[] = [
-  { id: '1', name: 'Sardinha',       price: 1500, unit: 'kg', stock_quantity: 50, min_stock: 10, allow_whole: true,  allow_clean: true,  allow_fillet: false, allow_steak: false, category_id: '1', image_url: '' },
-  { id: '2', name: 'Camarão Grande', price: 4500, unit: 'kg', stock_quantity: 15, min_stock: 3,  allow_whole: true,  allow_clean: false, allow_fillet: false, allow_steak: false, category_id: '2', image_url: '' },
-]
+// Sem dados fictícios — carrega apenas do localStorage / Supabase
+const initialCategories: Category[] = []
+const initialProducts: Product[] = []
 
 function playNotificationSound() {
   try {
@@ -77,7 +71,7 @@ function playNotificationSound() {
 
 export default function Admin() {
   const { user: authUser } = useAuthStore()
-  const isAdmin = authUser?.role === 'admin'
+  const isAdmin = authUser?.role === 'admin' || authUser?.role === 'super_admin'
   const gerenteAreas: string[] = (authUser?.role === 'gerente' && authUser?.access_areas) ? authUser.access_areas : []
 
   const [activeTab, setActiveTab] = useState<Tab>('overview')
@@ -140,9 +134,12 @@ export default function Admin() {
     }
 
     const notifiedIds = new Set<string>()
-    let channelRef: ReturnType<typeof supabase.channel> | null = null
+    let channelRef: ReturnType<NonNullable<typeof supabase>['channel']> | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let isMounted = true
 
     const subscribeNotifications = () => {
+      if (!isMounted) return
       if (channelRef) supabase!.removeChannel(channelRef)
       channelRef = supabase!
         .channel('admin-notifications')
@@ -170,8 +167,8 @@ export default function Admin() {
           // loadAll() será chamado pelo handleSync acima
         })
         .subscribe(status => {
-          if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            setTimeout(subscribeNotifications, 3000)
+          if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') && isMounted) {
+            reconnectTimer = setTimeout(subscribeNotifications, 3000)
           }
         })
     }
@@ -182,7 +179,9 @@ export default function Admin() {
     const interval = setInterval(() => pullAll().then(loadAll), 120000)
 
     return () => {
+      isMounted = false
       window.removeEventListener('khrismir:sync', handleSync)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
       if (channelRef) supabase!.removeChannel(channelRef)
       clearInterval(interval)
     }
@@ -229,20 +228,21 @@ export default function Admin() {
     : allTabs.filter(t => !t.adminOnly && gerenteAreas.includes(t.id))
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 p-4 lg:p-0">
-      <div className="lg:w-64 bg-white rounded-2xl shadow-xl p-4 h-fit sticky top-4">
-        <div className="flex items-center gap-3 px-2 mb-6 text-cyan-600">
+    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 p-2 sm:p-4 lg:p-0">
+      {/* Mobile: tabs horizontais scrolláveis | Desktop: sidebar */}
+      <div className="lg:w-64 bg-white rounded-2xl shadow-xl p-3 lg:p-4 h-fit lg:sticky lg:top-4">
+        <div className="hidden lg:flex items-center gap-3 px-2 mb-6 text-cyan-600">
           <Database className="w-6 h-6" />
           <h2 className="font-black text-xl tracking-tight">Khrismir Admin</h2>
         </div>
-        <nav className="space-y-1">
+        <nav className="flex lg:flex-col gap-1.5 lg:gap-1 overflow-x-auto lg:overflow-x-visible pb-1 lg:pb-0 -mx-1 lg:mx-0 px-1 lg:px-0 scrollbar-hide">
           {tabs.map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all ${
+              className={`flex items-center gap-2 lg:gap-3 px-3 lg:px-4 py-2 lg:py-2.5 rounded-xl text-xs lg:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 lg:flex-shrink lg:w-full ${
                 activeTab === tab.id ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-200' : 'text-gray-500 hover:bg-gray-100'
               }`}>
               <tab.icon className="w-4 h-4 shrink-0" />
-              <span className="flex-1 text-left">{tab.label}</span>
+              <span className="lg:flex-1 lg:text-left">{tab.label}</span>
               {tab.badge ? (
                 <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{tab.badge}</span>
               ) : null}
@@ -1293,10 +1293,11 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
     e.preventDefault()
     const prod = products.find((p: any) => p.id === form.pid)
     const total = Number(form.qty) * Number(form.price)
-    const newP = { id: Date.now().toString(), product_id: form.pid, quantity: Number(form.qty), unit_price: Number(form.price), total_price: total, supplier: form.provider, created_at: new Date().toISOString() }
+    const newP = { id: Date.now().toString(), product_id: form.pid, product_name: prod?.name ?? '', quantity: Number(form.qty), unit_price: Number(form.price), total_price: total, supplier: form.provider, created_at: new Date().toISOString() }
     const upP = [newP, ...purchases]; setPurchases(upP); localStorage.setItem('khrismir_purchases', JSON.stringify(upP))
     const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + Number(form.qty) } : p)
     setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
+    syncProducts(upProd)   // ← actualiza stock no Supabase para todos os dispositivos
 
     // Regista automaticamente no Fluxo de Caixa (ID determinístico evita duplicados no sync)
     registerPurchaseMovement(total, prod?.name || 'Produto', form.provider, form.account || undefined, newP.id)
@@ -2393,7 +2394,21 @@ function SuppliersTab() {
   const [form, setForm] = useState({ name: '', nif: '', phone: '', email: '', address: '', notes: '' })
   const [editing, setEditing] = useState<Supplier | null>(null)
 
-  const persist = (s: Supplier[]) => { setSuppliers(s); localStorage.setItem('khrismir_suppliers', JSON.stringify(s)) }
+  // Recarregar quando Realtime notificar mudança na tabela suppliers
+  useEffect(() => {
+    const handleSync = (e: Event) => {
+      const t = (e as CustomEvent).detail?.table
+      if (!t || t === 'suppliers') setSuppliers(load())
+    }
+    window.addEventListener('khrismir:sync', handleSync)
+    return () => window.removeEventListener('khrismir:sync', handleSync)
+  }, [])
+
+  const persist = (s: Supplier[]) => {
+    setSuppliers(s)
+    localStorage.setItem('khrismir_suppliers', JSON.stringify(s))
+    syncSuppliers(s)   // ← propaga para Supabase em tempo real
+  }
 
   const save = (e: React.FormEvent) => {
     e.preventDefault()
@@ -2496,6 +2511,7 @@ function ReturnsTab({ orders, products, setProducts, setOrders }: {
     })
     setProducts(updatedProducts)
     localStorage.setItem('khrismir_products', JSON.stringify(updatedProducts))
+    syncProducts(updatedProducts)   // ← actualiza stock no Supabase (devolução repõe stock)
     const cfMovements = JSON.parse(localStorage.getItem('cf_movements') || '[]')
     cfMovements.unshift({ id: Date.now().toString(), date: new Date().toISOString().slice(0, 10), type: 'expense', description: `Devolução ${modal.order_number}${modal.customer_name ? ' — ' + modal.customer_name : ''}`, amount: modal.total, category: 'Devoluções', account: '', reference: modal.order_number, created_at: new Date().toISOString() })
     localStorage.setItem('cf_movements', JSON.stringify(cfMovements))
@@ -2818,6 +2834,23 @@ function StoresTab() {
     loadStores()
   }
 
+  const handleDelete = async (s: any) => {
+    const confirmMsg = `⚠️ ATENÇÃO: Apagar "${s.name}" permanentemente?\n\nEsta acção é irreversível. Os dados (produtos, encomendas, movimentos) associados a esta loja permanecem no Supabase mas a loja deixa de existir.\n\nEscreva o nome da loja para confirmar:`
+    const typed = prompt(confirmMsg)
+    if (typed === null) return                        // cancelou
+    if (typed.trim() !== s.name.trim()) {
+      toast.error('Nome não coincide — operação cancelada')
+      return
+    }
+    const { ok, error } = await deleteStorePermanent(s.id)
+    if (!ok) { toast.error(`Erro ao apagar: ${error}`); return }
+    // Remove do localStorage também
+    const local: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_stores') || '[]') } catch { return [] } })()
+    localStorage.setItem('khrismir_stores', JSON.stringify(local.filter((x: any) => x.id !== s.id)))
+    toast.success(`Loja "${s.name}" apagada`)
+    loadStores()
+  }
+
   const fld = (k: keyof StoreForm) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm(p => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
 
@@ -2895,8 +2928,12 @@ function StoresTab() {
                 <button onClick={() => openEdit(s)} className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-gray-50 hover:bg-cyan-50 hover:text-cyan-700 text-gray-600 py-2 rounded-lg transition">
                   <Edit className="w-3.5 h-3.5" /> Editar
                 </button>
-                <button onClick={() => handleToggleActive(s)} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-lg transition ${s.active ? 'bg-red-50 hover:bg-red-100 text-red-600' : 'bg-green-50 hover:bg-green-100 text-green-700'}`}>
+                <button onClick={() => handleToggleActive(s)} className={`flex-1 flex items-center justify-center gap-1.5 text-xs font-medium py-2 rounded-lg transition ${s.active ? 'bg-amber-50 hover:bg-amber-100 text-amber-600' : 'bg-green-50 hover:bg-green-100 text-green-700'}`}>
                   {s.active ? <><XCircle className="w-3.5 h-3.5" /> Desactivar</> : <><CheckCircle className="w-3.5 h-3.5" /> Activar</>}
+                </button>
+                <button onClick={() => handleDelete(s)} title="Apagar loja permanentemente"
+                  className="flex items-center justify-center gap-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 px-3 py-2 rounded-lg transition">
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
