@@ -140,9 +140,16 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     // Shifts — merge local + Supabase (preserva turnos locais que ainda não chegaram à cloud)
     if (shifts.data) {
       const localShifts: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_shifts') || '[]') } catch { return [] } })()
-      const sbShiftIds = new Set(shifts.data.map((s: any) => s.id))
-      const localOnlyShifts = localShifts.filter((s: any) => s.id && !sbShiftIds.has(s.id))
-      lsSet('khrismir_shifts', [...localOnlyShifts, ...shifts.data])
+      // Filtra turnos do Supabase com opened_at inválido (null/undefined/não-parseável)
+      const validSbShifts = shifts.data.filter((s: any) =>
+        s.id && s.opened_at && !isNaN(new Date(s.opened_at).getTime())
+      )
+      const sbShiftIds = new Set(validSbShifts.map((s: any) => s.id))
+      // Filtra também os locais com opened_at inválido
+      const localOnlyShifts = localShifts.filter((s: any) =>
+        s.id && !sbShiftIds.has(s.id) && s.opened_at && !isNaN(new Date(s.opened_at).getTime())
+      )
+      lsSet('khrismir_shifts', [...localOnlyShifts, ...validSbShifts])
     }
     if (profiles.data && profiles.data.length > 0) {
       // Merge com clientes locais (sem sobrescrever contas de funcionários)

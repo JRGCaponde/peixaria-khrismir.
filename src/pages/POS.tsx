@@ -6,7 +6,7 @@ import { getSettings } from '../lib/settings'
 import { printInvoice, printBusinessInvoice } from '../utils/invoice'
 import { printReceipt } from '../utils/receipt'
 import { registerSaleMovement } from '../lib/cashflow'
-import { getOpenShift } from './_TurnoTab'
+import { getOpenShift } from './CashFlow/src/components/TurnoTab'
 import { calcOrderHash } from '../utils/saft'
 import { pullAll, syncOrderStatus, syncOrder, syncProductStock, syncCashFlow } from '../lib/sync'
 import { notifyDataChange } from '../lib/realtime'
@@ -295,17 +295,21 @@ export default function POS() {
   const pendingCount = orders.filter(o => o.status === 'pendente').length
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Tab bar */}
-      <div className="flex gap-2 bg-white rounded-xl shadow-sm p-1.5 w-fit">
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Ponto de Venda</h2>
+        <p className="text-gray-500 text-sm">Registo de vendas e encomendas</p>
+      </div>
+
+      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
         <button onClick={() => setActiveTab('pos')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${activeTab === 'pos' ? 'bg-cyan-600 text-white shadow' : 'text-gray-500 hover:bg-gray-100'}`}>
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${activeTab === 'pos' ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <Receipt className="w-4 h-4" /> Caixa (POS)
         </button>
         <button onClick={() => setActiveTab('orders')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${activeTab === 'orders' ? 'bg-cyan-600 text-white shadow' : 'text-gray-500 hover:bg-gray-100'}`}>
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${activeTab === 'orders' ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <ShoppingBag className="w-4 h-4" /> Encomendas
-          {pendingCount > 0 && <span className="bg-red-500 text-white text-xs rounded-full px-1.5">{pendingCount}</span>}
+          {pendingCount > 0 && <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{pendingCount}</span>}
         </button>
       </div>
 
