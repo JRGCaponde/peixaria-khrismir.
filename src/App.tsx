@@ -1,9 +1,37 @@
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useAuthStore } from './stores/useAuthStore'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Component, type ReactNode } from 'react'
 import { isAppActive, syncLicenseFromCloud } from './lib/license'
 import { StoreProvider, useStore } from './lib/storeContext'
+
+// ── Error Boundary — evita white screen se um componente falhar ──
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 p-6">
+          <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full text-center space-y-4">
+            <div className="text-5xl">🐟</div>
+            <h2 className="text-xl font-bold text-gray-800">Algo correu mal</h2>
+            <p className="text-sm text-gray-500 font-mono bg-gray-100 p-3 rounded-lg text-left break-all">
+              {(this.state.error as Error).message}
+            </p>
+            <button
+              onClick={() => { this.setState({ error: null }); window.location.reload() }}
+              className="w-full py-2.5 bg-cyan-600 text-white rounded-xl font-medium hover:bg-cyan-700"
+            >
+              Recarregar
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 // Páginas
 import Header     from './components/Header'
@@ -18,9 +46,8 @@ import Verify     from './pages/Verify'
 import Profile    from './pages/Profile'
 import CashFlow   from './pages/CashFlow'
 import VoiceAssistant from './pages/VoiceAssistant'
-import SmartHome from './pages/SmartHome'
-import Activation from './pages/Activation'
-import StorePicker from './pages/StorePicker'
+import Activation    from './pages/Activation'
+import StorePicker   from './pages/StorePicker'
 
 // --- PROTECÇÃO DE ROTAS ---
 
@@ -107,7 +134,6 @@ function AppInner() {
               <Route path="/admin/*"  element={<AdminRoute><Admin /></AdminRoute>} />
               <Route path="/cashflow" element={<StaffRoute><CashFlow /></StaffRoute>} />
               <Route path="/assistente" element={<StaffRoute><VoiceAssistant /></StaffRoute>} />
-              <Route path="/casa" element={<StaffRoute><SmartHome /></StaffRoute>} />
 
               {/* Fallback */}
               <Route path="*" element={<Navigate to={isAuthenticated ? getHomeRoute() : '/'} replace />} />
@@ -121,8 +147,10 @@ function AppInner() {
 
 export default function App() {
   return (
-    <StoreProvider>
-      <AppInner />
-    </StoreProvider>
+    <ErrorBoundary>
+      <StoreProvider>
+        <AppInner />
+      </StoreProvider>
+    </ErrorBoundary>
   )
 }

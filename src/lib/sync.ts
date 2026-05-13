@@ -120,12 +120,14 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     }
     if (cf.data)     lsSet('khrismir_cashflow', cf.data)
 
-    // Purchases — merge local + Supabase (preserva locais que ainda não chegaram à cloud)
+    // Purchases — merge local + Supabase, filtrando entradas com total_price <= 0
     if (pur.data) {
+      const validSb = pur.data.filter((p: any) => Number(p.total_price) > 0 && p.product_id)
       const localPur: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_purchases') || '[]') } catch { return [] } })()
-      const sbPurIds = new Set(pur.data.map((p: any) => p.id))
-      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id))
-      lsSet('khrismir_purchases', [...localOnlyPur, ...pur.data])
+      const sbPurIds = new Set(validSb.map((p: any) => p.id))
+      // Só preserva locais válidos (mesmo filtro: total_price > 0 e product_id existe)
+      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id) && Number(p.total_price) > 0 && p.product_id)
+      lsSet('khrismir_purchases', [...localOnlyPur, ...validSb])
     }
 
     if (zones.data)  lsSet('khrismir_delivery_zones', zones.data)
@@ -305,7 +307,9 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     created_at: c.created_at, store_id: sid,
   })), 'Fluxo de Caixa')
 
-  await upsert('purchases', purchases.map(p => ({
+  // Filtra compras inválidas (formato antigo ou total_price <= 0) antes de enviar ao Supabase
+  const validPurchases = purchases.filter(p => Number((p as any).total_price) > 0 && (p as any).product_id)
+  await upsert('purchases', validPurchases.map(p => ({
     id: (p as any).id, product_id: (p as any).product_id ?? '',
     product_name: (p as any).product_name ?? '', quantity: (p as any).quantity ?? 0,
     unit_price: (p as any).unit_price ?? 0, total_price: (p as any).total_price ?? 0,
@@ -471,8 +475,11 @@ export async function syncCashFlow(entries: CashFlow[]) {
 
 export async function syncPurchases(purchases: any[]) {
   if (!isSupabaseReady() || !supabase || !purchases.length) return
+  // Nunca enviar compras com total_price <= 0 (formato antigo ou dados inválidos)
+  const valid = purchases.filter(p => Number(p.total_price) > 0 && p.product_id)
+  if (!valid.length) return
   const sid = getCurrentStoreId()
-  const { error } = await supabase.from('purchases').upsert(purchases.map(p => ({
+  const { error } = await supabase.from('purchases').upsert(valid.map(p => ({
     id: p.id, product_id: p.product_id ?? '', product_name: p.product_name ?? '',
     quantity: p.quantity ?? 0, unit_price: p.unit_price ?? 0, total_price: p.total_price ?? 0,
     supplier: p.supplier ?? '', created_at: p.created_at, store_id: sid,

@@ -4,7 +4,8 @@
  */
 
 import { format } from 'date-fns'
-import { syncCfMovements, syncCfAccounts } from './sync'
+import { syncCfMovements, syncCfAccounts, deleteCfMovement } from './sync'
+import { isSupabaseReady } from './supabase'
 
 interface CFMovement {
   id: string
@@ -68,6 +69,8 @@ export function registerSaleMovement(
   orderId?: string,
   chosenAccount?: string,
 ) {
+  if (!amount || amount <= 0) return
+
   const accounts = readAccounts()
   const accountName = chosenAccount || accountForPayment(paymentType, accounts)
   const id = orderId ? `sync-sale-${orderId}` : `sale-${Date.now()}`
@@ -109,6 +112,8 @@ export function registerPurchaseMovement(
   accountName?: string,
   purchaseId?: string,
 ) {
+  if (!amount || amount <= 0) return
+
   const accounts = readAccounts()
   const account = accountName ?? (accounts.find(a => a.type === 'cash')?.name ?? accounts[0]?.name ?? 'Caixa')
   const id = purchaseId ? `sync-pur-${purchaseId}` : `purchase-${Date.now()}`
@@ -187,6 +192,8 @@ export function migrateExistingData(force = false): { imported: number; skipped:
   for (const pur of oldPur) {
     const id = `migpur-${pur.id}`
     if (existingIds.has(id)) continue
+    const amount = Number(pur.total_price)
+    if (!amount || amount <= 0) continue
 
     const productName = products.find((p: any) => p.id === pur.product_id)?.name || 'Produto'
     const dateStr = pur.created_at ? format(new Date(pur.created_at), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd')
@@ -196,7 +203,7 @@ export function migrateExistingData(force = false): { imported: number; skipped:
       date: dateStr,
       type: 'expense',
       description: `Compra: ${productName}${pur.supplier ? ` — ${pur.supplier}` : ''}`,
-      amount: Number(pur.total_price) || 0,
+      amount,
       category: 'Fornecedores',
       account: defaultAccount,
       created_at: pur.created_at || new Date().toISOString(),
@@ -234,8 +241,9 @@ export function syncAllData(): void {
   for (const order of orders) {
     if (order.status === 'cancelado') continue
     const id = `sync-sale-${order.id}`
-    // Skip if already synced by ID or by order_number reference (POS direct registration)
     if (existingIds.has(id) || existingRefs.has(order.order_number)) continue
+    const amount = Number(order.total)
+    if (!amount || amount <= 0) continue
 
     const accountName = accountForPayment(order.payment_type || 'dinheiro', accounts)
     const dateStr = order.created_at ? format(new Date(order.created_at), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd')
@@ -245,7 +253,7 @@ export function syncAllData(): void {
       date: dateStr,
       type: 'income',
       description: `Venda #${order.order_number}${order.customer_name ? ` — ${order.customer_name}` : ''}`,
-      amount: order.total,
+      amount,
       category: 'Vendas',
       account: accountName,
       reference: order.order_number,
@@ -259,6 +267,8 @@ export function syncAllData(): void {
   for (const pur of purchases) {
     const id = `sync-pur-${pur.id}`
     if (existingIds.has(id) || existingIds.has(`migpur-${pur.id}`)) continue
+    const amount = Number(pur.total_price)
+    if (!amount || amount <= 0) continue
 
     const productName = products.find((p: any) => p.id === pur.product_id)?.name || 'Produto'
     const dateStr = pur.created_at ? format(new Date(pur.created_at), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd')
@@ -268,7 +278,7 @@ export function syncAllData(): void {
       date: dateStr,
       type: 'expense',
       description: `Compra: ${productName}${pur.supplier ? ` — ${pur.supplier}` : ''}`,
-      amount: Number(pur.total_price) || 0,
+      amount,
       category: 'Fornecedores',
       account: defaultAcc,
       created_at: pur.created_at || new Date().toISOString(),
@@ -283,6 +293,26 @@ export function syncAllData(): void {
     // Sincroniza os novos movimentos para o Supabase
     syncCfMovements(toAdd)
   }
+}
+
+/**
+ * Remove do localStorage (e do Supabase) todos os movimentos com amount <= 0.
+ * Retorna o número de registos eliminados.
+ */
+export function purgeZeroMovements(): number {
+  const all  = readMovements()
+  const keep = all.filter(m => m.amount > 0)
+  const dead = all.filter(m => m.amount <= 0)
+
+  if (dead.length === 0) return 0
+
+  saveMovements(keep)
+
+  if (isSupabaseReady()) {
+    dead.forEach(m => deleteCfMovement(m.id))
+  }
+
+  return dead.length
 }
 
 /** Retorna um resumo rápido para mostrar no Admin */
