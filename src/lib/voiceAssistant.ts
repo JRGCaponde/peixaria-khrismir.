@@ -330,7 +330,7 @@ export function speak(text: string, onEnd?: () => void): void {
   utterance.pitch = 1.0
 
   const voices = window.speechSynthesis.getVoices()
-  const ptVoice = voices.find(v => v.lang.startsWith('pt'))
+  const ptVoice = voices.find(v => v.lang?.startsWith('pt'))
   if (ptVoice) utterance.voice = ptVoice
 
   if (onEnd) utterance.onend = () => onEnd()

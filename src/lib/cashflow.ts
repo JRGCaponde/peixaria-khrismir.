@@ -315,20 +315,28 @@ export function purgeZeroMovements(): number {
   return dead.length
 }
 
+const EMPTY_SUMMARY = { totalBalance: 0, todayIncome: 0, todayExpense: 0, monthIncome: 0, monthExpense: 0, recentSales: [] as CFMovement[], recentExpenses: [] as CFMovement[], accounts: [] as CFAccount[] }
+
 /** Retorna um resumo rápido para mostrar no Admin */
 export function getCashFlowSummary() {
-  const movements = readMovements()
-  const accounts  = readAccounts()
-  const today     = format(new Date(), 'yyyy-MM-dd')
-  const thisMonth = format(new Date(), 'yyyy-MM')
+  try {
+    const movements = readMovements()
+    const accounts  = readAccounts()
+    const today     = format(new Date(), 'yyyy-MM-dd')
+    const thisMonth = format(new Date(), 'yyyy-MM')
 
-  const totalBalance   = accounts.reduce((s, a) => s + a.balance, 0)
-  const todayIncome    = movements.filter(m => m.date === today && m.type === 'income').reduce((s, m) => s + m.amount, 0)
-  const todayExpense   = movements.filter(m => m.date === today && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
-  const monthIncome    = movements.filter(m => m.date?.startsWith(thisMonth) && m.type === 'income').reduce((s, m) => s + m.amount, 0)
-  const monthExpense   = movements.filter(m => m.date?.startsWith(thisMonth) && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
-  const recentSales    = movements.filter(m => m.category === 'Vendas').slice(0, 5)
-  const recentExpenses = movements.filter(m => m.type === 'expense').slice(0, 5)
+    const safe = movements.filter(m => m && typeof m.date === 'string')
 
-  return { totalBalance, todayIncome, todayExpense, monthIncome, monthExpense, recentSales, recentExpenses, accounts }
+    const totalBalance   = accounts.reduce((s, a) => s + (a.balance ?? 0), 0)
+    const todayIncome    = safe.filter(m => m.date === today && m.type === 'income').reduce((s, m) => s + m.amount, 0)
+    const todayExpense   = safe.filter(m => m.date === today && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
+    const monthIncome    = safe.filter(m => m.date.startsWith(thisMonth) && m.type === 'income').reduce((s, m) => s + m.amount, 0)
+    const monthExpense   = safe.filter(m => m.date.startsWith(thisMonth) && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
+    const recentSales    = safe.filter(m => m.category === 'Vendas').slice(0, 5)
+    const recentExpenses = safe.filter(m => m.type === 'expense').slice(0, 5)
+
+    return { totalBalance, todayIncome, todayExpense, monthIncome, monthExpense, recentSales, recentExpenses, accounts }
+  } catch {
+    return EMPTY_SUMMARY
+  }
 }
