@@ -325,8 +325,8 @@ export function getCashFlowSummary() {
   const totalBalance   = accounts.reduce((s, a) => s + a.balance, 0)
   const todayIncome    = movements.filter(m => m.date === today && m.type === 'income').reduce((s, m) => s + m.amount, 0)
   const todayExpense   = movements.filter(m => m.date === today && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
-  const monthIncome    = movements.filter(m => m.date.startsWith(thisMonth) && m.type === 'income').reduce((s, m) => s + m.amount, 0)
-  const monthExpense   = movements.filter(m => m.date.startsWith(thisMonth) && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
+  const monthIncome    = movements.filter(m => m.date?.startsWith(thisMonth) && m.type === 'income').reduce((s, m) => s + m.amount, 0)
+  const monthExpense   = movements.filter(m => m.date?.startsWith(thisMonth) && m.type === 'expense').reduce((s, m) => s + m.amount, 0)
   const recentSales    = movements.filter(m => m.category === 'Vendas').slice(0, 5)
   const recentExpenses = movements.filter(m => m.type === 'expense').slice(0, 5)
 
