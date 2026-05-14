@@ -122,7 +122,7 @@ export default function Admin() {
             localStorage.setItem('khrismir_auto_synced', '1')
             toast.success('✅ Dados sincronizados com a cloud!')
           } else {
-            const erros = result.details.filter(d => d.startsWith('❌'))
+            const erros = (result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('❌'))
             const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
             toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
           }
@@ -2097,12 +2097,12 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
     toast.dismiss(tid)
     setSyncing(false)
     if (result.ok) {
-      toast.success(`Sincronização concluída! ${result.details.filter(d => d.startsWith('✅')).length} tabelas actualizadas.`)
+      toast.success(`Sincronização concluída! ${(result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('✅')).length} tabelas actualizadas.`)
     } else {
-      const erros = result.details.filter(d => d.startsWith('❌'))
+      const erros = (result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('❌'))
       const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
       toast.error(`Sincronização falhou: ${msg}`, { duration: 10000 })
-      result.details.forEach(d => console.warn('[sync]', d))
+      ;(result.details ?? []).forEach(d => console.warn('[sync]', d))
     }
   }
 
@@ -2197,7 +2197,7 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
 
         toast.dismiss(tid)
         if (result.ok) {
-          toast.success(`✅ Restauro completo! ${result.details.filter(d => d.startsWith('✅')).length} tabelas sincronizadas.`)
+          toast.success(`✅ Restauro completo! ${(result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('✅')).length} tabelas sincronizadas.`)
         } else {
           toast.success('✅ Backup restaurado localmente.')
           toast.warning('Sincronização cloud parcial — verifique a ligação.')
