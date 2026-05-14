@@ -42,10 +42,30 @@ function loadFromLS(): StoreInfo | null {
   catch { return null }
 }
 
+// Chaves de negócio a limpar quando a loja muda (dados isolados por loja)
+const BUSINESS_KEYS = [
+  'khrismir_products', 'khrismir_categories', 'khrismir_orders',
+  'khrismir_cashflow', 'khrismir_purchases', 'khrismir_suppliers',
+  'khrismir_delivery_zones', 'khrismir_promos', 'khrismir_returns',
+  'khrismir_loyalty', 'khrismir_shifts', 'khrismir_settings',
+  'cf_movements', 'cf_accounts', 'cf_categories',
+  'cf_deleted_ids',          // tombstone — recomeça para a nova loja
+  'khrismir_auto_synced',    // força re-push dos dados da nova loja
+]
+
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [store, setStoreState] = useState<StoreInfo | null>(loadFromLS)
 
   const setStore = useCallback((s: StoreInfo) => {
+    // Se a loja mudou, limpa dados de negócio do localStorage
+    // para que a nova loja comece com base de dados limpa
+    try {
+      const current = JSON.parse(localStorage.getItem(LS_KEY) || 'null')
+      if (current && current.id !== s.id) {
+        BUSINESS_KEYS.forEach(k => localStorage.removeItem(k))
+      }
+    } catch { /* non-fatal */ }
+
     localStorage.setItem(LS_KEY, JSON.stringify(s))
     setStoreState(s)
     // Notifica todo o app que a loja mudou

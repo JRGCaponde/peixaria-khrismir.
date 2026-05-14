@@ -147,20 +147,29 @@ export default function Cart() {
 
   if (cart.length === 0) {
     return (
-      <div className="text-center py-20">
-        <ShoppingBag className="w-20 h-20 text-gray-200 mx-auto mb-4" />
-        <p className="text-gray-500 text-xl mb-2">O seu carrinho está vazio</p>
-        <p className="text-gray-400 text-sm mb-6">Adicione produtos do catálogo para continuar.</p>
-        <button onClick={() => navigate('/catalog')} className="bg-gradient-to-r from-cyan-600 to-blue-600 text-white px-8 py-3 rounded-xl font-semibold hover:from-cyan-700 hover:to-blue-700 transition">
-          Ver Catálogo
-        </button>
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Carrinho de Compras</h2>
+          <p className="text-gray-500 text-sm">0 itens</p>
+        </div>
+        <div className="text-center py-20">
+          <ShoppingBag className="w-20 h-20 text-gray-200 mx-auto mb-4" />
+          <p className="text-gray-500 text-xl mb-2">O seu carrinho está vazio</p>
+          <p className="text-gray-400 text-sm mb-6">Adicione produtos do catálogo para continuar.</p>
+          <button onClick={() => navigate('/catalog')} className="bg-gradient-to-r from-cyan-600 to-blue-600 text-white px-8 py-3 rounded-xl font-semibold hover:from-cyan-700 hover:to-blue-700 transition">
+            Ver Catálogo
+          </button>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Carrinho de Compras</h1>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Carrinho de Compras</h2>
+        <p className="text-gray-500 text-sm">{cart.length} {cart.length === 1 ? 'item' : 'itens'}</p>
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Lista de itens */}

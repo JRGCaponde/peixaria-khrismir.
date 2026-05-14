@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Mic, MicOff, Volume2, Trash2, HelpCircle, ArrowLeft, Brain, Cpu } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { Mic, MicOff, Volume2, Trash2, HelpCircle, Brain, Cpu } from 'lucide-react'
 import { processQuestion, askClaude, speak } from '../lib/voiceAssistant'
 
 type MessageRole = 'user' | 'assistant'
@@ -12,7 +11,6 @@ type AIMode = 'claude' | 'local'
 const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
 
 export default function VoiceAssistant() {
-  const navigate = useNavigate()
   const [phase, setPhase] = useState<Phase>('idle')
   const [messages, setMessages] = useState<Message[]>([])
   const [transcript, setTranscript] = useState('')
@@ -117,38 +115,35 @@ export default function VoiceAssistant() {
   }
 
   return (
-    <div className="max-w-lg mx-auto flex flex-col" style={{ height: 'calc(100vh - 140px)' }}>
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-4">
-        <button onClick={() => navigate(-1)} className="p-2 rounded-xl hover:bg-white/60 transition">
-          <ArrowLeft size={20} />
-        </button>
-        <div className="flex-1">
-          <h1 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-            <span className="text-2xl">🐟</span> Assistente Khrismir
-          </h1>
-          <p className="text-xs text-slate-500">Pergunte sobre vendas, stock, caixa e mais</p>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Assistente Khrismir</h2>
+          <p className="text-gray-500 text-sm">Pergunte sobre vendas, stock, caixa e mais</p>
         </div>
-        <button
-          onClick={() => setAiMode(m => m === 'claude' ? 'local' : 'claude')}
-          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition ${aiMode === 'claude' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}
-          title={aiMode === 'claude' ? 'Claude IA (online)' : 'Motor local (offline)'}
-        >
-          {aiMode === 'claude' ? <Brain size={14} /> : <Cpu size={14} />}
-          {aiMode === 'claude' ? 'Claude' : 'Local'}
-        </button>
-        <button onClick={() => { addMessage('user', 'ajuda'); handleAnswer('ajuda') }}
-          className="p-2 rounded-xl hover:bg-white/60 transition" title="Ajuda">
-          <HelpCircle size={18} className="text-slate-400" />
-        </button>
-        {messages.length > 0 && (
-          <button onClick={() => setMessages([])}
-            className="p-2 rounded-xl hover:bg-white/60 transition" title="Limpar conversa">
-            <Trash2 size={18} className="text-slate-400" />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAiMode(m => m === 'claude' ? 'local' : 'claude')}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition ${aiMode === 'claude' ? 'bg-purple-100 text-purple-700' : 'bg-slate-100 text-slate-600'}`}
+            title={aiMode === 'claude' ? 'Claude IA (online)' : 'Motor local (offline)'}
+          >
+            {aiMode === 'claude' ? <Brain size={14} /> : <Cpu size={14} />}
+            {aiMode === 'claude' ? 'Claude' : 'Local'}
           </button>
-        )}
+          <button onClick={() => { addMessage('user', 'ajuda'); handleAnswer('ajuda') }}
+            className="p-2 rounded-xl hover:bg-white/60 transition" title="Ajuda">
+            <HelpCircle size={18} className="text-slate-400" />
+          </button>
+          {messages.length > 0 && (
+            <button onClick={() => setMessages([])}
+              className="p-2 rounded-xl hover:bg-white/60 transition" title="Limpar conversa">
+              <Trash2 size={18} className="text-slate-400" />
+            </button>
+          )}
+        </div>
       </div>
 
+      <div className="flex flex-col" style={{ height: 'calc(100vh - 220px)' }}>
       {/* Chat Area */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 pb-4 pr-1">
         {messages.length === 0 && (
@@ -232,6 +227,7 @@ export default function VoiceAssistant() {
             Usa o Chrome ou Edge para esta funcionalidade.
           </p>
         )}
+      </div>
       </div>
     </div>
   )

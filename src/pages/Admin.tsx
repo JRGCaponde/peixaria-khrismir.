@@ -87,11 +87,23 @@ export default function Admin() {
     const load = (key: string, fallback: any) => {
       try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback }
     }
+
+    // ── Limpeza única de compras inválidas (formato antigo / total_price = 0) ──
+    try {
+      const raw: any[] = JSON.parse(localStorage.getItem('khrismir_purchases') || '[]')
+      const clean = raw.filter((p: any) => Number(p.total_price) > 0 && p.product_id)
+      if (clean.length !== raw.length) {
+        localStorage.setItem('khrismir_purchases', JSON.stringify(clean))
+        console.log(`[Admin] Purge compras inválidas: ${raw.length - clean.length} removidas`)
+      }
+    } catch { /* non-fatal */ }
+
     const loadAll = () => {
       setOrders(load('khrismir_orders', []))
       setEmployees(load('khrismir_employees', []))
       setCashFlow(load('khrismir_cashflow', []))
-      setPurchases(load('khrismir_purchases', []))
+      // Filtra compras inválidas (formato antigo com total_price=0 ou sem product_id)
+      setPurchases((load('khrismir_purchases', []) as any[]).filter((p: any) => Number(p.total_price) > 0 && p.product_id))
       setProducts(load('khrismir_products', initialProducts))
       setCategories(load('khrismir_categories', initialCategories))
       syncAllData()
@@ -228,30 +240,28 @@ export default function Admin() {
     : allTabs.filter(t => !t.adminOnly && gerenteAreas.includes(t.id))
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 p-2 sm:p-4 lg:p-0">
-      {/* Mobile: tabs horizontais scrolláveis | Desktop: sidebar */}
-      <div className="lg:w-64 bg-white rounded-2xl shadow-xl p-3 lg:p-4 h-fit lg:sticky lg:top-4">
-        <div className="hidden lg:flex items-center gap-3 px-2 mb-6 text-cyan-600">
-          <Database className="w-6 h-6" />
-          <h2 className="font-black text-xl tracking-tight">Khrismir Admin</h2>
-        </div>
-        <nav className="flex lg:flex-col gap-1.5 lg:gap-1 overflow-x-auto lg:overflow-x-visible pb-1 lg:pb-0 -mx-1 lg:mx-0 px-1 lg:px-0 scrollbar-hide">
-          {tabs.map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 lg:gap-3 px-3 lg:px-4 py-2 lg:py-2.5 rounded-xl text-xs lg:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 lg:flex-shrink lg:w-full ${
-                activeTab === tab.id ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-200' : 'text-gray-500 hover:bg-gray-100'
-              }`}>
-              <tab.icon className="w-4 h-4 shrink-0" />
-              <span className="lg:flex-1 lg:text-left">{tab.label}</span>
-              {tab.badge ? (
-                <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{tab.badge}</span>
-              ) : null}
-            </button>
-          ))}
-        </nav>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Khrismir Admin</h2>
+        <p className="text-gray-500 text-sm">Painel de administração</p>
       </div>
 
-      <div className="flex-1 min-h-[80vh]">
+      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
+        {tabs.map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${
+              activeTab === tab.id ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}>
+            <tab.icon className="w-4 h-4" />
+            {tab.label}
+            {tab.badge ? (
+              <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{tab.badge}</span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      <div>
         {activeTab === 'overview'   && <OverviewTab orders={orders} total={todayTotal} lowStock={lowStock} products={products} />}
         {activeTab === 'orders'     && <OrdersTab orders={orders} storeSettings={storeSettings} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
         {activeTab === 'products'   && <ProductsTab products={products} setProducts={setProducts} categories={categories} />}
@@ -1292,10 +1302,13 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
   const add = (e: React.FormEvent) => {
     e.preventDefault()
     const prod = products.find((p: any) => p.id === form.pid)
-    const total = Number(form.qty) * Number(form.price)
-    const newP = { id: Date.now().toString(), product_id: form.pid, product_name: prod?.name ?? '', quantity: Number(form.qty), unit_price: Number(form.price), total_price: total, supplier: form.provider, created_at: new Date().toISOString() }
+    const qty   = Number(form.qty)
+    const price = Number(form.price)
+    if (!qty || qty <= 0 || !price || price <= 0) { toast.error('Quantidade e preço devem ser maiores que 0'); return }
+    const total = qty * price
+    const newP = { id: Date.now().toString(), product_id: form.pid, product_name: prod?.name ?? '', quantity: qty, unit_price: price, total_price: total, supplier: form.provider, created_at: new Date().toISOString() }
     const upP = [newP, ...purchases]; setPurchases(upP); localStorage.setItem('khrismir_purchases', JSON.stringify(upP))
-    const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + Number(form.qty) } : p)
+    const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + qty } : p)
     setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
     syncProducts(upProd)   // ← actualiza stock no Supabase para todos os dispositivos
 
@@ -1321,7 +1334,7 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
           {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <input type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} placeholder="Quantidade (kg)" className="w-full border p-2 rounded-xl" required min="0.1" step="0.1" />
-        <input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="Preço Custo (AOA/kg)" className="w-full border p-2 rounded-xl" required min="0" />
+        <input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="Preço Custo (AOA/kg)" className="w-full border p-2 rounded-xl" required min="1" step="1" />
         <input value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} placeholder="Fornecedor" className="w-full border p-2 rounded-xl" />
         {cfAccounts.length > 0 && (
           <select value={form.account} onChange={e => setForm({ ...form, account: e.target.value })} className="w-full border p-2 rounded-xl">

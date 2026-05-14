@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/useAuthStore'
-import { Fish, User, LogOut, Menu, X, Bell, Store, ChevronDown, Mic, Home } from 'lucide-react'
+import { Fish, User, LogOut, Menu, X, Bell, Store, ChevronDown, Mic } from 'lucide-react'
 import { useState, useEffect } from 'react'
 import { getPendingOrderCount, startOrderPolling, requestNotificationPermission } from '../lib/notifications'
 import { useStore } from '../lib/storeContext'
@@ -59,7 +59,7 @@ export default function Header() {
                   <>
                     <Link to="/pos" className="hover:text-cyan-200 transition">PDV</Link>
                     <Link to="/cashflow" className="hover:text-cyan-200 transition">Caixa</Link>
-                    {user?.role === 'admin' && (
+                    {(user?.role === 'admin' || user?.role === 'gerente' || user?.role === 'super_admin') && (
                       <Link to="/admin" className="hover:text-cyan-200 transition">Admin</Link>
                     )}
                   </>
@@ -71,11 +71,6 @@ export default function Header() {
                   </>
                 )}
                 <div className="flex items-center gap-2 ml-4">
-                  {user?.role !== 'client' && (
-                    <Link to="/casa" className="p-1.5 bg-white/20 rounded-full hover:bg-white/30 transition" title="Casa Inteligente">
-                      <Home className="w-5 h-5" />
-                    </Link>
-                  )}
                   {user?.role !== 'client' && (
                     <Link to="/assistente" className="p-1.5 bg-white/20 rounded-full hover:bg-white/30 transition" title="Assistente de Voz">
                       <Mic className="w-5 h-5" />
@@ -144,14 +139,11 @@ export default function Header() {
                     <Link to="/cashflow" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       Fluxo de Caixa
                     </Link>
-                    {user?.role === 'admin' && (
+                    {(user?.role === 'admin' || user?.role === 'gerente' || user?.role === 'super_admin') && (
                       <Link to="/admin" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                         Admin
                       </Link>
                     )}
-                    <Link to="/casa" className="flex items-center gap-2 py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
-                      <Home className="w-4 h-4" /> Casa Inteligente
-                    </Link>
                     <Link to="/assistente" className="flex items-center gap-2 py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                       <Mic className="w-4 h-4" /> Assistente de Voz
                     </Link>

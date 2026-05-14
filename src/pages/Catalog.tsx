@@ -74,7 +74,13 @@ export default function Catalog() {
   const cartItemCount = cart.reduce((sum, c) => sum + c.quantity, 0)
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6">
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Catálogo</h2>
+        <p className="text-gray-500 text-sm">Escolha os seus produtos frescos</p>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-6">
       <div className="flex-1">
         <div className="bg-white rounded-xl shadow-lg p-4 mb-6">
           <div className="flex flex-col md:flex-row gap-4">
@@ -159,6 +165,7 @@ export default function Catalog() {
             </>
           )}
         </div>
+      </div>
       </div>
     </div>
   )

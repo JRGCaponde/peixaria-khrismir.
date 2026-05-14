@@ -141,7 +141,7 @@ async function applyChange(table: string, event: string, newRow: any, oldRow: an
 }
 
 // ── Gestor do canal ────────────────────────────────────────────────────────
-let _channel: ReturnType<typeof supabase.channel> | null = null
+let _channel: ReturnType<NonNullable<typeof supabase>['channel']> | null = null
 let _started = false
 
 /**

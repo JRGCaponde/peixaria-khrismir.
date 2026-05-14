@@ -1,8 +1,10 @@
 /**
  * autoBackup.ts — Backup automático a cada 30 minutos
- * Ciclo: snapshot local → push Supabase → pull Supabase (importação actualizada)
+ * Ciclo: snapshot local → push Supabase (o Realtime distribui para todos os dispositivos)
+ * NOTA: O Realtime (WebSocket) sincroniza mudanças em tempo real — o autoBackup é apenas
+ * um safety net para garantir consistência caso o WebSocket falhe.
  */
-import { pullAll, pushAll } from './sync'
+import { pushAll } from './sync'
 import { toast } from 'sonner'
 
 export const BACKUP_KEY      = 'khrismir_backup_auto'
@@ -76,36 +78,27 @@ let _timer: ReturnType<typeof setInterval> | null = null
 let _running = false
 
 /**
- * Executa um ciclo completo:
+ * Executa um ciclo de backup:
  * 1. Snapshot local (createLocalBackup)
- * 2. Push para Supabase (backup na cloud)
- * 3. Pull do Supabase (importação actualizada)
+ * 2. Push para Supabase (o Realtime distribui automaticamente para todos os dispositivos)
+ *
+ * NOTA: Não faz pull — o Realtime (postgres_changes) já sincroniza
+ * as mudanças de outros dispositivos em tempo real via WebSocket.
  */
-export async function runAutoBackup(silent = false): Promise<void> {
+export async function runAutoBackup(silent = true): Promise<void> {
   if (_running) return
   _running = true
   try {
     // 1. Snapshot local
-    const meta = createLocalBackup()
+    createLocalBackup()
 
-    // 2. Backup para a cloud
+    // 2. Push para Supabase → Realtime notifica todos os outros dispositivos
     await pushAll()
-
-    // 3. Importar dados actualizados da cloud
-    await pullAll()
-
-    if (!silent) {
-      const time = new Date().toLocaleTimeString('pt-AO', { hour: '2-digit', minute: '2-digit' })
-      toast.success(`☁️ Backup automático (${time}) — ${meta.keys} tabelas guardadas e importadas`, {
-        duration: 4000,
-        id: 'auto-backup-toast',
-      })
-    }
   } catch (err) {
     console.warn('[AutoBackup] Erro:', err)
     if (!silent) {
-      toast.warning('⚠️ Backup automático com falha — verifique a ligação à internet', {
-        duration: 5000,
+      toast.warning('⚠️ Sync falhou — verifique a ligação à internet', {
+        duration: 3000,
         id: 'auto-backup-error',
       })
     }
@@ -114,11 +107,13 @@ export async function runAutoBackup(silent = false): Promise<void> {
   }
 }
 
-/** Inicia o ciclo automático de backup a cada 30 minutos */
+/** Inicia o ciclo automático de sync a cada 30 minutos */
 export function startAutoBackup(): void {
   if (_timer) return // já está a correr
-  console.log('[AutoBackup] Iniciado — backup a cada 30 minutos')
-  _timer = setInterval(() => runAutoBackup(false), INTERVAL_MS)
+  console.log('[AutoBackup] Iniciado — sync a cada 30 minutos')
+  // Primeiro backup imediato
+  runAutoBackup(true)
+  _timer = setInterval(() => runAutoBackup(true), INTERVAL_MS)
 }
 
 /** Para o ciclo automático */
