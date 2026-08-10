@@ -12,14 +12,22 @@ import type { CashMovement } from '../lib/types'
 
 /* ── helpers ─────────────────────────────────────────── */
 function fmt(n: number | undefined | null) { return (n ?? 0).toLocaleString('pt-AO') + ' AOA' }
-function fmtTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('pt-AO', { hour: '2-digit', minute: '2-digit' })
+function fmtTime(iso: string | undefined | null) {
+  if (!iso) return '--:--'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '--:--'
+  return d.toLocaleTimeString('pt-AO', { hour: '2-digit', minute: '2-digit' })
 }
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric' })
+function fmtDate(iso: string | undefined | null) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  return d.toLocaleDateString('pt-AO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
-function fmtDuration(openedAt: string, closedAt?: string): string {
+function fmtDuration(openedAt: string | undefined | null, closedAt?: string): string {
+  if (!openedAt) return '—'
   const start = new Date(openedAt).getTime()
+  if (isNaN(start)) return '—'
   const end = closedAt ? new Date(closedAt).getTime() : Date.now()
   const mins = Math.floor((end - start) / 60000)
   if (mins < 60) return `${mins}min`
@@ -27,7 +35,11 @@ function fmtDuration(openedAt: string, closedAt?: string): string {
 }
 
 function loadShifts(): ShiftSession[] {
-  try { return JSON.parse(localStorage.getItem('khrismir_shifts') || '[]') } catch { return [] }
+  try {
+    const raw: ShiftSession[] = JSON.parse(localStorage.getItem('khrismir_shifts') || '[]')
+    // Filter out corrupt records that have no valid opened_at
+    return raw.filter(s => s.id && s.opened_at && !isNaN(new Date(s.opened_at).getTime()))
+  } catch { return [] }
 }
 function saveShifts(s: ShiftSession[]) {
   localStorage.setItem('khrismir_shifts', JSON.stringify(s))
@@ -60,13 +72,14 @@ function getPaymentBreakdown(orders: Order[]): PayBreakdown {
   }
 }
 function getShiftOrders(shift: ShiftSession, allOrders: Order[]): Order[] {
-  const start = new Date(shift.opened_at).getTime()
+  const start = shift.opened_at ? new Date(shift.opened_at).getTime() : NaN
+  if (isNaN(start)) return []
   const end   = shift.closed_at ? new Date(shift.closed_at).getTime() : Date.now()
-  return allOrders.filter(o =>
-    o.status !== 'cancelado' &&
-    new Date(o.created_at).getTime() >= start &&
-    new Date(o.created_at).getTime() <= end
-  ).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  return allOrders.filter(o => {
+    if (o.status === 'cancelado') return false
+    const t = new Date(o.created_at).getTime()
+    return !isNaN(t) && t >= start && t <= end
+  }).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
 }
 
 /* ── PaymentBar ──────────────────────────────────────── */
@@ -216,8 +229,14 @@ export function TurnoTab({ movements }: { movements: CashMovement[] }) {
     ? movements.filter(m => m.type === 'expense' && new Date(m.created_at) >= new Date(openShift.opened_at)).reduce((s, m) => s + m.amount, 0)
     : 0
 
-  const closedShifts = shifts.filter(s => s.closed_at)
-    .sort((a, b) => new Date(b.opened_at).getTime() - new Date(a.opened_at).getTime())
+  const closedShifts = shifts.filter(s => s.closed_at && s.opened_at)
+    .sort((a, b) => {
+      const ta = new Date(a.opened_at).getTime()
+      const tb = new Date(b.opened_at).getTime()
+      if (isNaN(tb)) return -1
+      if (isNaN(ta)) return 1
+      return tb - ta
+    })
 
   // Turnos de outros funcionários/dispositivos ainda abertos (inclui turnos antigos
   // sem opened_by_id, de antes desta funcionalidade existir)
@@ -351,7 +370,7 @@ export function TurnoTab({ movements }: { movements: CashMovement[] }) {
               />
             </div>
             <button type="submit" className="w-full bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition flex items-center justify-center gap-2">
-              <LogIn className="w-5 h-5" /> Abrir Turno
+              <LogIn className="w-5 h-5" /> Abrir Turno — {user?.full_name || '—'}
             </button>
           </form>
         </div>
