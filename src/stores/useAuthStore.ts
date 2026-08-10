@@ -276,18 +276,24 @@ export const useAuthStore = create<AuthState>()(
 
             if (!error && data.user) {
               supabaseId = data.user.id
-              const { error: profileErr } = await supabase.from('profiles').upsert({
-                id: data.user.id,
+              // A trigger handle_new_user() (SECURITY DEFINER, ignora RLS) já criou a
+              // linha em profiles como parte da própria transacção do signUp — por isso
+              // usamos update() em vez de upsert() aqui: um upsert tenta o caminho de
+              // INSERT primeiro, o que obriga o Postgres a validar profiles_id_fkey
+              // contra auth.users sob a sessão restrita do admin actual, que não tem
+              // permissão RLS para "ver" linhas de outros utilizadores em auth.users —
+              // e isso rebentava com "violates foreign key constraint" mesmo a linha
+              // existindo. Um update() simples não tem esse problema.
+              const { error: profileErr } = await supabase.from('profiles').update({
                 email,
                 full_name: fullName,
                 phone: phone || null,
                 role,
                 access_areas: access_areas ?? null,
                 store_id: getCurrentStoreId(),
-                created_at: new Date().toISOString(),
-              }, { onConflict: 'id' })
+              }).eq('id', data.user.id)
               if (profileErr) {
-                console.error('[createUser] profile upsert failed:', profileErr.message)
+                console.error('[createUser] profile update failed:', profileErr.message)
                 cloudError = `Conta criada mas o perfil falhou a gravar: ${profileErr.message}`
                 supabaseId = undefined // sem perfil, o login por Supabase recriaria como 'client' — não conta como sucesso na cloud
               }
