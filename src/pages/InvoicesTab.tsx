@@ -7,7 +7,8 @@ import { getSettings } from '../lib/settings'
 import { calcOrderHash } from '../utils/saft'
 import { printBusinessInvoice } from '../utils/invoice'
 import { registerSaleMovement } from '../lib/cashflow'
-import { syncOrder } from '../lib/sync'
+import { syncOrder, syncProductStock } from '../lib/sync'
+import { notifyDataChange } from '../lib/realtime'
 import type { Order, OrderItem, Product, PaymentType, PreparationType } from '../types/database'
 
 const fmt = (n: number) => (n ?? 0).toLocaleString('pt-AO') + ' Kz'
@@ -39,7 +40,7 @@ function nextDocNumber(docType: DocType): string {
   }
 }
 
-export default function InvoicesTab({ products }: { products: Product[] }) {
+export default function InvoicesTab({ products, setProducts }: { products: Product[]; setProducts: (p: Product[]) => void }) {
   const { store } = useStore()
   const [orders, setOrders] = useState<Order[]>(() => loadOrders().filter(o => o.doc_type))
   const [filter, setFilter] = useState<'all' | DocType>('all')
@@ -53,6 +54,23 @@ export default function InvoicesTab({ products }: { products: Product[] }) {
     saveOrders(all)
     syncOrder(order)
     refresh()
+  }
+
+  // Dá baixa no stock — só chamado para FA (venda real). A FP (proforma) não move mercadoria.
+  const decrementStock = (items: OrderItem[]) => {
+    const stored: Product[] = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
+    items.forEach(item => {
+      const idx = stored.findIndex(p => p.id === item.product_id)
+      if (idx !== -1) stored[idx] = { ...stored[idx], stock_quantity: Math.max(0, stored[idx].stock_quantity - item.quantity) }
+    })
+    localStorage.setItem('khrismir_products', JSON.stringify(stored))
+    setProducts(stored)
+    ;(async () => {
+      for (const item of items) {
+        await syncProductStock(item.product_id, item.quantity)
+      }
+      notifyDataChange('products')
+    })()
   }
 
   const printOrder = (order: Order) => printBusinessInvoice(order, getSettings())
@@ -81,6 +99,7 @@ export default function InvoicesTab({ products }: { products: Product[] }) {
     const fa: Order = { ...base, hash: calcOrderHash(base) }
     persistOrder(fa)
     registerSaleMovement(fa.total, fa.order_number, fa.payment_type, fa.id)
+    decrementStock(fa.items)
 
     const all = loadOrders().map(o => o.id === fp.id ? { ...o, converted_to_order_id: orderId } : o)
     saveOrders(all)
@@ -157,7 +176,10 @@ export default function InvoicesTab({ products }: { products: Product[] }) {
           onClose={() => setModal(null)}
           onCreated={(order, doPrint) => {
             persistOrder(order)
-            if (order.doc_type === 'FA') registerSaleMovement(order.total, order.order_number, order.payment_type, order.id)
+            if (order.doc_type === 'FA') {
+              registerSaleMovement(order.total, order.order_number, order.payment_type, order.id)
+              decrementStock(order.items)
+            }
             setModal(null)
             if (doPrint) printOrder(order)
             toast.success(`${docLabel[order.doc_type as DocType]} ${order.order_number} criada!`)

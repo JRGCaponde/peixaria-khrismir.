@@ -414,7 +414,7 @@ export default function Admin() {
           {activeTab === 'vendas'     && <VendasTab />}
           {activeTab === 'import'     && <ImportPrimaveraTab categories={categories} />}
           {activeTab === 'contabilidade' && <AccountingTab />}
-          {activeTab === 'facturas'   && <InvoicesTab products={products} />}
+          {activeTab === 'facturas'   && <InvoicesTab products={products} setProducts={setProducts} />}
           {activeTab === 'contas'     && (
             <AccountsPayableReceivableTab
               orders={orders}
