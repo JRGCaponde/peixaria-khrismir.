@@ -22,10 +22,16 @@ import { Reports } from './src/components/Reports'
 import { pullAll, syncCfAccounts, syncCfCategories } from '../../lib/sync'
 import { isSupabaseReady } from '../../lib/supabase'
 import { purgeZeroMovements } from '../../lib/cashflow'
+import { useAuthStore } from '../../stores/useAuthStore'
 
 type TabId = 'turno' | 'dashboard' | 'movements' | 'accounts' | 'categories' | 'reports'
 
 export default function CashFlow() {
+  const { user } = useAuthStore()
+  // Funcionários normais só vêem o Turno (precisam de abrir/fechar o próprio
+  // turno para poder vender no PDV) — o resto da Caixa é reservado a
+  // admin/gerente/super_admin.
+  const isRestricted = user?.role === 'employee'
   const [tab, setTab] = useState<TabId>('turno')
 
   const [accounts, setAccounts]     = useState<Account[]>(() => ls('cf_accounts', DEFAULT_ACCOUNTS))
@@ -111,7 +117,7 @@ export default function CashFlow() {
     return Object.entries(map).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value)
   }, [movements, thisMonthStart, thisMonthEnd])
 
-  const tabs = [
+  const allTabs = [
     { id: 'turno'      as const, label: 'Turno',      Icon: Clock },
     { id: 'dashboard'  as const, label: 'Dashboard',  Icon: LayoutDashboard },
     { id: 'movements'  as const, label: 'Movimentos', Icon: DollarSign },
@@ -119,6 +125,8 @@ export default function CashFlow() {
     { id: 'categories' as const, label: 'Categorias', Icon: Tag },
     { id: 'reports'    as const, label: 'Relatórios', Icon: FileText },
   ]
+  const tabs = isRestricted ? allTabs.filter(t => t.id === 'turno') : allTabs
+  const effectiveTab: TabId = isRestricted ? 'turno' : tab
 
   return (
     <div className="space-y-6">
@@ -127,19 +135,21 @@ export default function CashFlow() {
         <p className="text-gray-500 text-sm">Gestão financeira completa</p>
       </div>
 
-      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
-        {tabs.map(({ id, label, Icon }) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${
-              tab === id ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}>
-            <Icon className="w-4 h-4" />{label}
-          </button>
-        ))}
-      </div>
+      {tabs.length > 1 && (
+        <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
+          {tabs.map(({ id, label, Icon }) => (
+            <button key={id} onClick={() => setTab(id)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${
+                tab === id ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}>
+              <Icon className="w-4 h-4" />{label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {tab === 'turno'      && <TurnoTab movements={movements} />}
-      {tab === 'dashboard'  && (
+      {effectiveTab === 'turno'      && <TurnoTab movements={movements} />}
+      {effectiveTab === 'dashboard'  && (
         <Dashboard
           totalBalance={totalBalance}
           todayIncome={todayIncome}
@@ -152,7 +162,7 @@ export default function CashFlow() {
           expenseByCategory={expenseByCategory}
         />
       )}
-      {tab === 'movements'  && (
+      {effectiveTab === 'movements'  && (
         <Movements
           movements={movements}
           setMovements={setMovements}
@@ -161,7 +171,7 @@ export default function CashFlow() {
           categories={categories}
         />
       )}
-      {tab === 'accounts'   && (
+      {effectiveTab === 'accounts'   && (
         <AccountsTab
           accounts={accounts}
           setAccounts={setAccounts}
@@ -170,14 +180,14 @@ export default function CashFlow() {
           categories={categories}
         />
       )}
-      {tab === 'categories' && (
+      {effectiveTab === 'categories' && (
         <CategoriesTab
           categories={categories}
           setCategories={setCategories}
           movements={movements}
         />
       )}
-      {tab === 'reports'    && (
+      {effectiveTab === 'reports'    && (
         <Reports
           movements={movements}
           categories={categories}
