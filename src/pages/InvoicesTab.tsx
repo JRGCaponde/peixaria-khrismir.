@@ -6,7 +6,7 @@ import { useStore } from '../lib/storeContext'
 import { getSettings } from '../lib/settings'
 import { calcOrderHash } from '../utils/saft'
 import { printBusinessInvoice } from '../utils/invoice'
-import { registerSaleMovement } from '../lib/cashflow'
+import { registerSaleMovement, registerCreditSale } from '../lib/cashflow'
 import { syncOrder, syncProductStock } from '../lib/sync'
 import { notifyDataChange } from '../lib/realtime'
 import type { Order, OrderItem, Product, PaymentType, PreparationType } from '../types/database'
@@ -77,6 +77,7 @@ export default function InvoicesTab({ products, setProducts }: { products: Produ
 
   const convertToFA = (fp: Order) => {
     if (!confirm(`Converter ${fp.order_number} em Factura definitiva?`)) return
+    const isCredit = confirm('Esta factura é a crédito (fiado)? OK = Fiado, Cancelar = Pagamento imediato')
     const docNumber = nextDocNumber('FA')
     const orderId = crypto.randomUUID()
     const base = {
@@ -88,6 +89,7 @@ export default function InvoicesTab({ products, setProducts }: { products: Produ
       customer_nif: fp.customer_nif,
       status: 'entregue' as const,
       payment_type: fp.payment_type,
+      payment_status: (isCredit ? 'pendente' : 'pago') as 'pago' | 'pendente',
       delivery_type: 'retirada' as const,
       subtotal: fp.subtotal,
       total: fp.total,
@@ -98,7 +100,11 @@ export default function InvoicesTab({ products, setProducts }: { products: Produ
     }
     const fa: Order = { ...base, hash: calcOrderHash(base) }
     persistOrder(fa)
-    registerSaleMovement(fa.total, fa.order_number, fa.payment_type, fa.id)
+    if (isCredit) {
+      registerCreditSale(fa.id, fa.order_number, fa.total)
+    } else {
+      registerSaleMovement(fa.total, fa.order_number, fa.payment_type, fa.id)
+    }
     decrementStock(fa.items)
 
     const all = loadOrders().map(o => o.id === fp.id ? { ...o, converted_to_order_id: orderId } : o)
@@ -148,7 +154,12 @@ export default function InvoicesTab({ products, setProducts }: { products: Produ
                       <Icon className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                      <p className="font-bold text-sm truncate">{o.doc_type} {o.order_number} — {o.customer_name || 'Consumidor Final'}</p>
+                      <p className="font-bold text-sm truncate flex items-center gap-1.5">
+                        <span>{o.doc_type} {o.order_number} — {o.customer_name || 'Consumidor Final'}</span>
+                        {o.payment_status === 'pendente' && (
+                          <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 shrink-0">FIADO</span>
+                        )}
+                      </p>
                       <p className="text-xs text-gray-400">{new Date(o.created_at).toLocaleDateString('pt-AO')} {o.converted_to_order_id ? '· convertida em factura' : ''}</p>
                     </div>
                   </div>
@@ -177,7 +188,11 @@ export default function InvoicesTab({ products, setProducts }: { products: Produ
           onCreated={(order, doPrint) => {
             persistOrder(order)
             if (order.doc_type === 'FA') {
-              registerSaleMovement(order.total, order.order_number, order.payment_type, order.id)
+              if (order.payment_status === 'pendente') {
+                registerCreditSale(order.id, order.order_number, order.total)
+              } else {
+                registerSaleMovement(order.total, order.order_number, order.payment_type, order.id)
+              }
               decrementStock(order.items)
             }
             setModal(null)
@@ -202,6 +217,7 @@ function InvoiceForm({ docType, products, storeId, onClose, onCreated }: {
   const [productSearch, setProductSearch] = useState('')
   const [lines, setLines] = useState<{ product: Product; quantity: number; unit_price: number }[]>([])
   const [paymentType, setPaymentType] = useState<PaymentType>('dinheiro')
+  const [isCredit, setIsCredit] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const client = clients.find(c => c.id === clientId)
@@ -267,6 +283,7 @@ function InvoiceForm({ docType, products, storeId, onClose, onCreated }: {
       customer_nif: client.tax_id ?? undefined,
       status: 'entregue' as const,
       payment_type: paymentType,
+      payment_status: (docType === 'FA' && isCredit ? 'pendente' : 'pago') as 'pago' | 'pendente',
       delivery_type: 'retirada' as const,
       subtotal: total,
       total,
@@ -352,21 +369,29 @@ function InvoiceForm({ docType, products, storeId, onClose, onCreated }: {
         </div>
 
         {docType === 'FA' && (
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Forma de Pagamento</label>
-            <select value={paymentType} onChange={e => setPaymentType(e.target.value as PaymentType)} className="w-full border p-2.5 rounded-xl text-sm">
-              <option value="dinheiro">Dinheiro</option>
-              <option value="multicaixa">Multicaixa</option>
-              <option value="express">Express</option>
-            </select>
+          <div className="space-y-2">
+            {!isCredit && (
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Forma de Pagamento</label>
+                <select value={paymentType} onChange={e => setPaymentType(e.target.value as PaymentType)} className="w-full border p-2.5 rounded-xl text-sm">
+                  <option value="dinheiro">Dinheiro</option>
+                  <option value="multicaixa">Multicaixa</option>
+                  <option value="express">Express</option>
+                </select>
+              </div>
+            )}
+            <label className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 cursor-pointer">
+              <input type="checkbox" checked={isCredit} onChange={e => setIsCredit(e.target.checked)} className="w-4 h-4" />
+              <span>🧾 Factura a Crédito (Fiado — vai para Contas a Receber)</span>
+            </label>
           </div>
         )}
 
         <div className="flex justify-between items-center border-t pt-4">
           <span className="text-lg font-bold">Total: {fmt(total)}</span>
           <button onClick={submit} disabled={saving}
-            className={`px-6 py-2.5 rounded-xl font-bold text-white transition disabled:opacity-50 ${docType === 'FA' ? 'bg-cyan-600 hover:bg-cyan-700' : 'bg-amber-500 hover:bg-amber-600'}`}>
-            {saving ? 'A criar…' : `Criar ${docType === 'FA' ? 'Factura' : 'Proforma'}`}
+            className={`px-6 py-2.5 rounded-xl font-bold text-white transition disabled:opacity-50 ${docType === 'FA' ? (isCredit ? 'bg-amber-600 hover:bg-amber-700' : 'bg-cyan-600 hover:bg-cyan-700') : 'bg-amber-500 hover:bg-amber-600'}`}>
+            {saving ? 'A criar…' : `Criar ${docType === 'FA' ? (isCredit ? 'Factura (Fiado)' : 'Factura') : 'Proforma'}`}
           </button>
         </div>
       </div>
