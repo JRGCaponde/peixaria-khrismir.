@@ -546,6 +546,7 @@ export async function syncOrder(order: Order): Promise<boolean> {
     delivery_distance_km: o.delivery_distance_km ?? null,
     doc_type: o.doc_type ?? null, converted_to_order_id: o.converted_to_order_id ?? null,
     converted_from_order_id: o.converted_from_order_id ?? null,
+    payment_status: o.payment_status ?? 'pago', paid_at: o.paid_at ?? null,
     created_at: o.created_at, updated_at: o.updated_at,
     store_id: getCurrentStoreId(),
   }
