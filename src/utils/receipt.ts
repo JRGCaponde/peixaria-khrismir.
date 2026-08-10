@@ -1,100 +1,83 @@
+/**
+ * receipt.ts — Impressão térmica 80mm (42 colunas)
+ * Usado pelo POS para talões de caixa rápidos.
+ */
 import type { Order } from '../types/database'
 import type { StoreSettings } from '../lib/settings'
 
-const fmt = (n: number) =>
-  n.toLocaleString('pt-AO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const COL = 42
 
-export function printReceipt(order: Order, settings: StoreSettings) {
-  const ivaRate = settings.iva_rate / 100
-  const subtotal  = order.subtotal ?? order.items.reduce((s, i) => s + i.total_price, 0)
-  const delivery  = order.delivery_fee ?? 0
-  const discount  = order.discount_amount ?? 0
-  const baseTrib  = order.total / (1 + ivaRate)
-  const ivaValor  = order.total - baseTrib
+function rline(left: string, right: string, width = COL): string {
+  const gap = width - left.length - right.length
+  return left + ' '.repeat(Math.max(1, gap)) + right
+}
+function rcenter(text: string, width = COL): string {
+  const pad = Math.max(0, Math.floor((width - text.length) / 2))
+  return ' '.repeat(pad) + text
+}
+function rdivider(char = '-', width = COL): string { return char.repeat(width) }
+function rwrap(text: string, width = COL): string[] {
+  const words = text.split(' '); const lines: string[] = []; let cur = ''
+  for (const w of words) {
+    if ((cur + ' ' + w).trim().length > width) { if (cur) lines.push(cur); cur = w }
+    else cur = cur ? cur + ' ' + w : w
+  }
+  if (cur) lines.push(cur); return lines
+}
+function rfmt(n: number): string {
+  return n.toLocaleString('pt-AO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
 
-  const rows = order.items.map(i => `
-    <tr>
-      <td>${i.product_name}<br><small style="color:#555">${i.preparation}</small></td>
-      <td style="text-align:center">${Number(i.quantity).toFixed(2)}&nbsp;kg</td>
-      <td style="text-align:right">${fmt(i.unit_price)}</td>
-      <td style="text-align:right;font-weight:700">${fmt(i.total_price)}</td>
-    </tr>`).join('')
+export function printReceipt(order: Order, settings: StoreSettings): void {
+  const items    = order.items ?? []
+  const delivery = order.delivery_fee ?? 0
+  const discount = order.discount_amount ?? 0
+  const total    = order.total ?? 0
+  const rows: string[] = []
 
-  const payLabel: Record<string, string> = {
-    dinheiro: 'Dinheiro', multicaixa: 'Multicaixa', express: 'Express'
+  rows.push(rcenter(settings.name.toUpperCase()))
+  if (settings.address) rows.push(rcenter(settings.address))
+  if (settings.phone)   rows.push(rcenter('Tel: ' + settings.phone))
+  if (settings.nif)     rows.push(rcenter('NIF: ' + settings.nif))
+  rows.push(rdivider('='))
+  rows.push(rcenter('TALAO DE VENDA'))
+  rows.push(rdivider('='))
+  rows.push(rline('N: ' + order.order_number, new Date(order.created_at).toLocaleString('pt-AO', { dateStyle: 'short', timeStyle: 'short' })))
+  if (order.customer_name)  rows.push('Cliente: ' + order.customer_name)
+  rows.push(rdivider())
+  rows.push(rline('ARTIGO + QTD', 'TOTAL'))
+  rows.push(rdivider())
+
+  for (const item of items) {
+    const name  = item.product_name + ((item as any).preparation ? ' (' + (item as any).preparation + ')' : '')
+    const nls   = rwrap(name, COL - 10)
+    rows.push(rline(nls[0] ?? name, rfmt(item.total_price) + ' Kz'))
+    rows.push('  ' + rfmt(item.unit_price) + ' x ' + Number(item.quantity).toFixed(3) + ' kg')
+    for (let i = 1; i < nls.length; i++) rows.push('  ' + nls[i])
   }
 
-  const html = `<!DOCTYPE html>
-<html lang="pt">
-<head>
-  <meta charset="UTF-8">
-  <title>Talão ${order.order_number}</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:'Courier New',monospace;font-size:11px;color:#000;width:80mm;margin:0 auto;padding:6px 8px}
-    .c{text-align:center}
-    .b{font-weight:700}
-    .sep{border:none;border-top:1px dashed #000;margin:5px 0}
-    .sep2{border:none;border-top:2px solid #000;margin:5px 0}
-    table{width:100%;border-collapse:collapse;font-size:10px}
-    th{text-align:left;border-bottom:1px solid #000;padding:2px 0;font-size:10px}
-    td{padding:2px 0;vertical-align:top}
-    .r{text-align:right}
-    .row{display:flex;justify-content:space-between;padding:1px 0}
-    .tot{display:flex;justify-content:space-between;font-size:14px;font-weight:700;padding:3px 0}
-    @media print{body{width:80mm}@page{margin:0;size:80mm auto}}
-  </style>
-</head>
-<body>
-  <div class="c b" style="font-size:15px">${settings.name}</div>
-  <div class="c" style="font-size:9px">${settings.address}</div>
-  <div class="c" style="font-size:9px">Tel: ${settings.phone} &nbsp;|&nbsp; NIF: ${settings.nif}</div>
-  <hr class="sep2">
+  rows.push(rdivider())
+  if (delivery > 0) rows.push(rline('Taxa entrega', rfmt(delivery) + ' Kz'))
+  if (discount > 0) rows.push(rline('Desconto', '-' + rfmt(discount) + ' Kz'))
+  const ivaRate = (settings.iva_rate ?? 14) / 100
+  rows.push(rline('Base tributavel', rfmt(total / (1 + ivaRate)) + ' Kz'))
+  rows.push(rline('IVA (' + (settings.iva_rate ?? 14) + '%)', rfmt(total - total / (1 + ivaRate)) + ' Kz'))
+  rows.push(rdivider('='))
+  rows.push(rline('TOTAL', rfmt(total) + ' Kz'))
+  rows.push(rdivider('='))
+  const payLabel: Record<string, string> = { dinheiro: 'Dinheiro', multicaixa: 'Multicaixa', express: 'Express' }
+  rows.push(rline('Pagamento', order.payment_status === 'pendente' ? 'FIADO (por pagar)' : (payLabel[order.payment_type] ?? order.payment_type)))
+  rows.push(rdivider())
+  rows.push(rcenter('Obrigado pela preferencia!'))
+  if ((order as any).hash) rows.push(rcenter('Hash: ' + String((order as any).hash).slice(0, 8) + '...'))
+  rows.push(rcenter('Peixaria Khrismir v1.5'))
+  rows.push(''); rows.push(''); rows.push('')
 
-  <div class="row"><span>Talão N.º:</span><span class="b">${order.order_number}</span></div>
-  <div class="row"><span>Data:</span><span>${new Date(order.created_at).toLocaleString('pt-AO', { dateStyle: 'short', timeStyle: 'short' })}</span></div>
-  <div class="row"><span>Pagamento:</span><span>${payLabel[order.payment_type] ?? order.payment_type}</span></div>
-  <div class="row"><span>Tipo:</span><span>${order.delivery_type === 'delivery' ? 'Entrega ao domicílio' : 'Levantamento na loja'}</span></div>
-  ${order.customer_name ? `<div class="row"><span>Cliente:</span><span>${order.customer_name}</span></div>` : ''}
-  ${order.delivery_address ? `<div class="row"><span>Endereço:</span><span style="max-width:50mm;text-align:right">${order.delivery_address}</span></div>` : ''}
-
-  <hr class="sep">
-  <table>
-    <thead>
-      <tr>
-        <th>Artigo</th>
-        <th style="text-align:center">Qtd</th>
-        <th style="text-align:right">P.Unit</th>
-        <th style="text-align:right">Total</th>
-      </tr>
-    </thead>
-    <tbody>${rows}</tbody>
-  </table>
-  <hr class="sep">
-
-  <div class="row"><span>Subtotal</span><span>${fmt(subtotal)} AKZ</span></div>
-  ${delivery > 0 ? `<div class="row"><span>Entrega${order.delivery_zone ? ' ('+order.delivery_zone+')' : ''}</span><span>${fmt(delivery)} AKZ</span></div>` : ''}
-  ${discount > 0 ? `<div class="row"><span>Desconto${order.discount_code ? ' ('+order.discount_code+')' : ''}</span><span>-${fmt(discount)} AKZ</span></div>` : ''}
-  <div class="row"><span>Base tributável</span><span>${fmt(baseTrib)} AKZ</span></div>
-  <div class="row"><span>IVA (${settings.iva_rate}%)</span><span>${fmt(ivaValor)} AKZ</span></div>
-
-  <hr class="sep2">
-  <div class="tot"><span>TOTAL</span><span>${fmt(order.total)} AKZ</span></div>
-  <hr class="sep2">
-
-  <div class="c" style="font-size:8px;margin-top:6px">
-    Hash: ${order.hash ?? '————'}<br>
-    Processado por Peixaria Khrismir v1.5<br>
-    Dec. Pres. n.º 71/25 &nbsp;•&nbsp; NIF: ${settings.nif}
-  </div>
-  <div class="c b" style="margin-top:8px">Obrigado pela sua preferência!</div>
-  <br><br>
-</body>
-</html>`
-
-  const win = window.open('', '_blank', 'width=380,height=650')
+  const html = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8"><title>Talao ${order.order_number}</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.4;color:#000;background:#fff;padding:4px 8px;width:80mm}pre{white-space:pre-wrap;font-family:inherit;font-size:inherit}@media print{body{padding:0}@page{margin:2mm;size:80mm auto}}</style>
+</head><body><pre>${rows.join('\n')}</pre></body></html>`
+  const win = window.open('', '_blank', 'width=400,height=600')
   if (!win) return
-  win.document.write(html)
-  win.document.close()
-  setTimeout(() => win.print(), 500)
+  win.document.write(html); win.document.close()
+  setTimeout(() => win.print(), 400)
 }

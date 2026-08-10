@@ -62,11 +62,14 @@ export default function Orders() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold">
-          {user?.role === 'client' ? 'Os Meus Pedidos' : 'Encomendas Online'}
-        </h1>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">
+            {user?.role === 'client' ? 'Os Meus Pedidos' : 'Encomendas Online'}
+          </h2>
+          <p className="text-gray-500 text-sm">Acompanhe o estado das encomendas</p>
+        </div>
         <button onClick={refresh} disabled={syncing}
           className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-xl text-sm font-medium text-gray-600 hover:bg-gray-50 transition disabled:opacity-50">
           <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
@@ -74,13 +77,19 @@ export default function Orders() {
         </button>
       </div>
 
-      <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
-        {(['all' as const, ...statusKeys] as const).map(status => (
-          <button key={status} onClick={() => setFilter(status)}
-            className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap ${filter === status ? 'bg-cyan-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-100'}`}>
-            {status === 'all' ? 'Todos' : statusConfig[status].label}
-          </button>
-        ))}
+      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
+        {(['all' as const, ...statusKeys] as const).map(status => {
+          const Icon = status !== 'all' ? statusConfig[status].icon : null
+          return (
+            <button key={status} onClick={() => setFilter(status)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${
+                filter === status ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}>
+              {Icon && <Icon className="w-4 h-4" />}
+              {status === 'all' ? 'Todos' : statusConfig[status].label}
+            </button>
+          )
+        })}
       </div>
 
       {filtered.length === 0 ? (

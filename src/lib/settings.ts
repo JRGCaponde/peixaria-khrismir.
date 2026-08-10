@@ -17,6 +17,9 @@ export interface StoreSettings {
   bank_name?: string
   bank_account?: string
   bank_iban?: string
+  // Localização da loja (para cálculo do preço de entrega por distância)
+  store_lat?: number
+  store_lng?: number
 }
 
 export const DEFAULT_SETTINGS: StoreSettings = {
@@ -35,6 +38,9 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   bank_name: '',
   bank_account: '',
   bank_iban: '',
+  // Centro de Lubango por omissão — o admin deve ajustar para a localização exacta da loja
+  store_lat: -14.9172,
+  store_lng: 13.4925,
 }
 
 export function getSettings(): StoreSettings {

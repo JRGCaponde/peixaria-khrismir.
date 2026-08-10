@@ -95,7 +95,3 @@ export function subscribePresence(fn: Listener): () => void {
   fn(latestUsers)
   return () => listeners.delete(fn)
 }
-
-export function getOnlineUsers(): OnlineUser[] {
-  return latestUsers
-}

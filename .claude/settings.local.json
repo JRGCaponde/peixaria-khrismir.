@@ -19,7 +19,15 @@
       "Bash(vercel env *)",
       "Bash(npx supabase *)",
       "PowerShell(Stop-Process *)",
-      "Bash(vercel --prod)"
+      "Bash(vercel --prod)",
+      "Bash(Remove-Item *)",
+      "Bash(curl -s http://localhost:5173/)",
+      "mcp__Claude_in_Chrome__navigate",
+      "PowerShell(Get-Process -Id 13352 -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Id 13352 -Force -Confirm:$false)",
+      "PowerShell(\"killed\")",
+      "WebFetch(domain:quiosqueagt.minfin.gov.ao)",
+      "Bash(grep -E \"\\\\.zip|\\\\.json|\\\\.xlsx|\\\\.py|~\\\\$\")"
     ]
   }
 }

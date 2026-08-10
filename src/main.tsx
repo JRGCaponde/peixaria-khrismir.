@@ -2,15 +2,18 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
-import { useAuthStore } from './stores/useAuthStore'
 import { pullAll } from './lib/sync'
 import { isSupabaseReady } from './lib/supabase'
 import { startRealtime } from './lib/realtime'
+import { useAuthStore } from './stores/useAuthStore'
 
-// Inicializar sessão Supabase, sincronizar dados e arrancar Realtime
+// Sincronizar dados e arrancar Realtime. A sessão de FUNCIONÁRIO/ADMIN nunca é
+// restaurada automaticamente — tem sempre de introduzir as credenciais quando
+// o app é aberto. Um CLIENTE já registado é reconhecido automaticamente, para
+// facilitar o acesso a quem volta a usar a app (ver useAuthStore.restoreClientSession).
 async function boot() {
+  await useAuthStore.getState().restoreClientSession()
   if (isSupabaseReady()) {
-    await useAuthStore.getState().initSupabaseSession()
     await pullAll()      // Primeiro pull: traz tudo do Supabase para localStorage
     startRealtime()      // A partir daqui qualquer mudança no Supabase chega em tempo real
   }

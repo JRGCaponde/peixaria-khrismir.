@@ -4,10 +4,12 @@ import { Trash2, Plus, Minus, Truck, CreditCard, Banknote, ShoppingBag, Tag, X }
 import { toast } from 'sonner'
 import { useAuthStore } from '../stores/useAuthStore'
 import { getSettings } from '../lib/settings'
-import type { CartItem, Order, PaymentType, DeliveryType, DeliveryZone, PromoCode } from '../types/database'
+import type { CartItem, Order, PaymentType, DeliveryType, PromoCode, MapReference } from '../types/database'
 import { calcOrderHash } from '../utils/saft'
 import { registerSaleMovement } from '../lib/cashflow'
-import { notifyNewOrder } from '../lib/sync'
+import { notifyNewOrder, syncPromos } from '../lib/sync'
+import { haversineKm, calcDeliveryFee } from '../lib/deliveryPricing'
+import DeliveryMapPicker from '../components/DeliveryMapPicker'
 
 export default function Cart() {
   const navigate = useNavigate()
@@ -18,13 +20,16 @@ export default function Cart() {
   const [deliveryType, setDeliveryType] = useState<DeliveryType>('retirada')
   const [paymentType,  setPaymentType]  = useState<PaymentType>('multicaixa')
   const [address,      setAddress]      = useState('')
-  const [selectedZone, setSelectedZone] = useState<DeliveryZone | null>(null)
+  const [deliveryPos,  setDeliveryPos]  = useState<{ lat: number; lng: number } | null>(null)
   const [promoInput,   setPromoInput]   = useState('')
   const [appliedPromo, setAppliedPromo] = useState<PromoCode | null>(null)
   const [loading,      setLoading]      = useState(false)
   const [selectedBank, setSelectedBank] = useState('')
 
-  const deliveryZones: DeliveryZone[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_delivery_zones') || '[]') } catch { return [] } })()
+  const mapReferences: MapReference[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_map_references') || '[]') } catch { return [] } })()
+  const storePos = settings.store_lat != null && settings.store_lng != null
+    ? { lat: settings.store_lat, lng: settings.store_lng } : null
+  const distanceKm = storePos && deliveryPos ? haversineKm(storePos.lat, storePos.lng, deliveryPos.lat, deliveryPos.lng) : null
   const bankAccounts: { id: string; name: string; type: string }[] = (() => {
     try {
       const all = JSON.parse(localStorage.getItem('cf_accounts') || '[]')
@@ -48,7 +53,7 @@ export default function Cart() {
   const removeItem = (idx: number) => saveCart(cart.filter((_, i) => i !== idx))
 
   const subtotal = cart.reduce((sum, c) => sum + c.price * c.quantity, 0)
-  const deliveryFee = deliveryType === 'delivery' ? (selectedZone?.price ?? 0) : 0
+  const deliveryFee = deliveryType === 'delivery' && distanceKm != null ? calcDeliveryFee(distanceKm) : 0
   const discountAmount = appliedPromo
     ? appliedPromo.discount_type === 'percentage'
       ? Math.round(subtotal * appliedPromo.discount_value / 100)
@@ -72,6 +77,7 @@ export default function Cart() {
   const handleCheckout = async () => {
     if (cart.length === 0) { toast.error('Carrinho vazio'); return }
     if (deliveryType === 'delivery' && !address.trim()) { toast.error('Informe o endereço de entrega'); return }
+    if (deliveryType === 'delivery' && !deliveryPos) { toast.error('Marque a sua localização no mapa'); return }
     if (settings.min_order_delivery > 0 && deliveryType === 'delivery' && subtotal < settings.min_order_delivery) {
       toast.error(`Pedido mínimo para delivery: ${settings.min_order_delivery.toLocaleString()} Kz`); return
     }
@@ -91,9 +97,11 @@ export default function Cart() {
       status:          'pendente' as const,
       payment_type:    paymentType,
       delivery_type:   deliveryType,
-      delivery_zone:   selectedZone?.name,
       delivery_fee:    deliveryFee,
       delivery_address: address || undefined,
+      delivery_lat:    deliveryPos?.lat,
+      delivery_lng:    deliveryPos?.lng,
+      delivery_distance_km: distanceKm != null ? Math.round(distanceKm * 100) / 100 : undefined,
       discount_code:   appliedPromo?.code,
       discount_amount: discountAmount || undefined,
       subtotal:        subtotal,
@@ -123,12 +131,12 @@ export default function Cart() {
     registerSaleMovement(cartTotal, orderNumber, paymentType, now.toString(), bankAccount)
 
     // Envia encomenda para o Supabase com retry automático (admin vê em tempo real)
-    notifyNewOrder(newOrder, orderNumber, cartTotal, user?.full_name)
+    await notifyNewOrder(newOrder, orderNumber, cartTotal, user?.full_name)
 
     if (appliedPromo) {
       const promos: PromoCode[] = JSON.parse(localStorage.getItem('khrismir_promos') || '[]')
       const idx = promos.findIndex(p => p.id === appliedPromo.id)
-      if (idx !== -1) { promos[idx].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)) }
+      if (idx !== -1) { promos[idx].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)); syncPromos(promos) }
     }
 
     localStorage.removeItem('khrismir_cart')
@@ -147,20 +155,29 @@ export default function Cart() {
 
   if (cart.length === 0) {
     return (
-      <div className="text-center py-20">
-        <ShoppingBag className="w-20 h-20 text-gray-200 mx-auto mb-4" />
-        <p className="text-gray-500 text-xl mb-2">O seu carrinho está vazio</p>
-        <p className="text-gray-400 text-sm mb-6">Adicione produtos do catálogo para continuar.</p>
-        <button onClick={() => navigate('/catalog')} className="bg-gradient-to-r from-cyan-600 to-blue-600 text-white px-8 py-3 rounded-xl font-semibold hover:from-cyan-700 hover:to-blue-700 transition">
-          Ver Catálogo
-        </button>
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Carrinho de Compras</h2>
+          <p className="text-gray-500 text-sm">0 itens</p>
+        </div>
+        <div className="text-center py-20">
+          <ShoppingBag className="w-20 h-20 text-gray-200 mx-auto mb-4" />
+          <p className="text-gray-500 text-xl mb-2">O seu carrinho está vazio</p>
+          <p className="text-gray-400 text-sm mb-6">Adicione produtos do catálogo para continuar.</p>
+          <button onClick={() => navigate('/catalog')} className="bg-gradient-to-r from-cyan-600 to-blue-600 text-white px-8 py-3 rounded-xl font-semibold hover:from-cyan-700 hover:to-blue-700 transition">
+            Ver Catálogo
+          </button>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-6">Carrinho de Compras</h1>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Carrinho de Compras</h2>
+        <p className="text-gray-500 text-sm">{cart.length} {cart.length === 1 ? 'item' : 'itens'}</p>
+      </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Lista de itens */}
@@ -213,18 +230,25 @@ export default function Cart() {
 
             {deliveryType === 'delivery' && (
               <>
-                {deliveryZones.length > 0 && (
-                  <div>
-                    <label className="block text-sm font-medium mb-2">Zona de Entrega</label>
-                    <select value={selectedZone?.id || ''} onChange={e => setSelectedZone(deliveryZones.find(z => z.id === e.target.value) || null)}
-                      className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cyan-500 text-sm" required>
-                      <option value="">Selecionar zona...</option>
-                      {deliveryZones.map(z => (
-                        <option key={z.id} value={z.id}>{z.name} — {z.price === 0 ? 'Grátis' : `${z.price.toLocaleString()} Kz`}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <div>
+                  <label className="block text-sm font-medium mb-2">A sua Localização *</label>
+                  <DeliveryMapPicker
+                    center={storePos ?? { lat: -14.9172, lng: 13.4925 }}
+                    marker={deliveryPos}
+                    onMarkerChange={(lat, lng) => setDeliveryPos({ lat, lng })}
+                    radiusKm={2}
+                    referencePoints={[
+                      ...(storePos ? [{ name: 'Loja', lat: storePos.lat, lng: storePos.lng }] : []),
+                      ...mapReferences,
+                    ]}
+                    tryGeolocateOnMount
+                  />
+                  {distanceKm != null && (
+                    <p className="text-sm text-cyan-700 font-medium mt-2">
+                      📍 {distanceKm.toFixed(1)} km da loja — {calcDeliveryFee(distanceKm).toLocaleString()} Kz de entrega
+                    </p>
+                  )}
+                </div>
                 <div>
                   <label className="block text-sm font-medium mb-2">Endereço de Entrega *</label>
                   <textarea value={address} onChange={e => setAddress(e.target.value)}
@@ -301,7 +325,7 @@ export default function Cart() {
             </div>
             {deliveryFee > 0 && (
               <div className="flex justify-between text-sm text-gray-600">
-                <span>Entrega ({selectedZone?.name})</span>
+                <span>Entrega ({distanceKm?.toFixed(1)} km)</span>
                 <span>{deliveryFee.toLocaleString('pt-AO')} AOA</span>
               </div>
             )}

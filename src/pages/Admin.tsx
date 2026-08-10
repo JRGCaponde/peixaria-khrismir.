@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { toast } from 'sonner'
 import CryptoJS from 'crypto-js'
 import * as XLSX from 'xlsx'
@@ -12,29 +12,40 @@ import {
   Receipt, MessageCircle, Download, Clock, ShoppingBag,
   Settings, MapPin, Tag, UserCheck, Printer, Truck, RotateCcw,
   Star, CalendarDays, AlertTriangle, QrCode, Share2, X, DollarSign, Monitor, FileBarChart2,
-  Store, CheckCircle, XCircle, Building2, Save,
+  Store, CheckCircle, XCircle, Building2, Save, Link2, ExternalLink, RefreshCw, BookOpen, HandCoins,
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
-import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, DeliveryZone, PromoCode, Supplier, Return, LoyaltyTransaction } from '../types/database'
+import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, PromoCode, Supplier, Return, LoyaltyTransaction, MapReference } from '../types/database'
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
-import { printInvoice } from '../utils/invoice'
+import { printInvoice, printPrimaveraInvoice, type PrimaveraDocInfo } from '../utils/invoice'
 import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport } from '../utils/reports'
-import { getLastBackupMeta, restoreLocalBackup, type BackupMeta } from '../lib/autoBackup'
-import { registerPurchaseMovement, getCashFlowSummary, syncAllData, migrateExistingData } from '../lib/cashflow'
+import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
-  syncProducts, syncCategories, syncDeliveryZones, syncPromos, syncSettings,
-  syncPurchases, syncSuppliers, clearAllData,
-  deleteProduct, deleteCategory, deleteZone, deletePromo,
-  syncStore, deleteStorePermanent,
+  syncProducts, syncCategories, syncPromos, syncSettings,
+  syncPurchases, syncSuppliers, deleteSupplier, clearAllData,
+  deleteProduct, deleteCategory, deletePromo,
+  syncStore, deleteStorePermanent, syncLoyalty, syncReturns,
+  syncMapReferences, deleteMapReference,
 } from '../lib/sync'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 import { generateSAFTXML, downloadSAFT } from '../utils/saft'
+import { getAGTConfig, saveAGTConfig, testAGTConnection, isAGTConfigured, type AGTConfig } from '../lib/agt'
+import DeliveryMapPicker from '../components/DeliveryMapPicker'
 import { useAuthStore } from '../stores/useAuthStore'
 import { subscribePresence, type OnlineUser } from '../lib/presence'
+// Lazy-loaded tabs (separate bundles — só carregam quando acedidos)
+const VendasTab        = lazy(() => import('./VendasTab'))
+const ImportPrimaveraTab = lazy(() => import('./ImportPrimaveraTab'))
+const TurnoTabLazy     = lazy(() =>
+  import('./CashFlow/src/components/TurnoTab').then(m => ({ default: m.TurnoTab }))
+)
+const AccountingTab    = lazy(() => import('./AccountingTab'))
+const InvoicesTab      = lazy(() => import('./InvoicesTab'))
+const AccountsPayableReceivableTab = lazy(() => import('./AccountsPayableReceivableTab'))
 
-type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system' | 'sessions' | 'reports' | 'stores'
+type Tab = 'overview' | 'orders' | 'products' | 'categories' | 'employees' | 'customers' | 'cashflow' | 'turno' | 'purchases' | 'suppliers' | 'delivery' | 'promos' | 'returns' | 'loyalty' | 'calendar' | 'agt' | 'settings' | 'system' | 'sessions' | 'reports' | 'stores' | 'vendas' | 'import' | 'contabilidade' | 'facturas' | 'contas'
 
 const statusConfig: Record<OrderStatus, { label: string; color: string; next?: OrderStatus }> = {
   pendente:   { label: 'Pendente',   color: 'bg-yellow-100 text-yellow-800',  next: 'confirmado' },
@@ -48,6 +59,12 @@ const statusConfig: Record<OrderStatus, { label: string; color: string; next?: O
 // Sem dados fictícios — carrega apenas do localStorage / Supabase
 const initialCategories: Category[] = []
 const initialProducts: Product[] = []
+
+// Coordenadas aproximadas (fonte: pesquisa web) — só para orientação inicial no mapa
+const DEFAULT_MAP_REFERENCES: MapReference[] = [
+  { id: 'ref-lubango', name: 'Lubango (centro)', lat: -14.9172, lng: 13.4925 },
+  { id: 'ref-humpata', name: 'Humpata',           lat: -15.0000, lng: 13.3333 },
+]
 
 function playNotificationSound() {
   try {
@@ -74,6 +91,31 @@ export default function Admin() {
   const isAdmin = authUser?.role === 'admin' || authUser?.role === 'super_admin'
   const gerenteAreas: string[] = (authUser?.role === 'gerente' && authUser?.access_areas) ? authUser.access_areas : []
 
+  // PWA install prompt
+  const [installPrompt, setInstallPrompt] = useState<any>(null)
+  const [showInstallBanner, setShowInstallBanner] = useState(false)
+  useEffect(() => {
+    const handler = (e: any) => { e.preventDefault(); setInstallPrompt(e); setShowInstallBanner(true) }
+    window.addEventListener('beforeinstallprompt', handler)
+    return () => window.removeEventListener('beforeinstallprompt', handler)
+  }, [])
+
+  // Request notification permission once on first admin load
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      import('../lib/notifications').then(({ requestNotificationPermission }) => {
+        setTimeout(() => requestNotificationPermission(), 3000)
+      }).catch(() => {})
+    }
+  }, [])
+  const handleInstall = async () => {
+    if (!installPrompt) return
+    installPrompt.prompt()
+    const { outcome } = await installPrompt.userChoice
+    if (outcome === 'accepted') setShowInstallBanner(false)
+  }
+
+  const navigate = useNavigate()
   const [activeTab, setActiveTab] = useState<Tab>('overview')
   const [categories, setCategories] = useState<Category[]>([])
   const [products,   setProducts]   = useState<Product[]>([])
@@ -87,11 +129,23 @@ export default function Admin() {
     const load = (key: string, fallback: any) => {
       try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback }
     }
+
+    // ── Limpeza única de compras inválidas (formato antigo / total_price = 0) ──
+    try {
+      const raw: any[] = JSON.parse(localStorage.getItem('khrismir_purchases') || '[]')
+      const clean = raw.filter((p: any) => Number(p.total_price) > 0 && p.product_id)
+      if (clean.length !== raw.length) {
+        localStorage.setItem('khrismir_purchases', JSON.stringify(clean))
+        console.log(`[Admin] Purge compras inválidas: ${raw.length - clean.length} removidas`)
+      }
+    } catch { /* non-fatal */ }
+
     const loadAll = () => {
       setOrders(load('khrismir_orders', []))
       setEmployees(load('khrismir_employees', []))
       setCashFlow(load('khrismir_cashflow', []))
-      setPurchases(load('khrismir_purchases', []))
+      // Filtra compras inválidas (formato antigo com total_price=0 ou sem product_id)
+      setPurchases((load('khrismir_purchases', []) as any[]).filter((p: any) => Number(p.total_price) > 0 && p.product_id))
       setProducts(load('khrismir_products', initialProducts))
       setCategories(load('khrismir_categories', initialCategories))
       syncAllData()
@@ -104,6 +158,13 @@ export default function Admin() {
       loadAll()
       if (isSupabaseReady()) {
         const alreadySynced = localStorage.getItem('khrismir_auto_synced')
+        // Só faz push completo (todas as encomendas/produtos/etc.) UMA VEZ, no
+        // arranque num dispositivo novo. Repetir isto em cada mount do Admin
+        // reescrevia todas as encomendas já sincronizadas — o trigger de
+        // `updated_at` do Supabase tratava isso como uma mudança real em CADA
+        // encomenda, inundando o canal Realtime com centenas de eventos e
+        // travando a UI. O Realtime (WebSocket) + pullAll() já mantêm tudo
+        // sincronizado; as escritas individuais já fazem o seu próprio push.
         if (!alreadySynced) {
           const result = await pushAll()
           if (result.ok) {
@@ -114,8 +175,6 @@ export default function Admin() {
             const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
             toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
           }
-        } else {
-          pushAll()
         }
       }
     }
@@ -147,6 +206,7 @@ export default function Admin() {
           if (!payload?.id || notifiedIds.has(payload.id)) return
           notifiedIds.add(payload.id)
           playNotificationSound()
+          import('../lib/notifications').then(({ notifyNewOrder }) => notifyNewOrder(payload.order_number, payload.customer_name))
           toast(`🛒 Nova encomenda: ${payload.order_number}`, {
             description: `${payload.customer_name || 'Cliente'} • ${(payload.total || 0).toLocaleString()} AOA`,
             duration: 8000,
@@ -158,6 +218,7 @@ export default function Admin() {
           if (notifiedIds.has(o.id)) return
           notifiedIds.add(o.id)
           playNotificationSound()
+          import('../lib/notifications').then(({ notifyNewOrder }) => notifyNewOrder(o.order_number, o.customer_name ?? undefined))
           toast(`🛒 Nova encomenda: ${o.order_number}`, {
             description: `${o.customer_name || 'Cliente'} • ${(o.total || 0).toLocaleString()} AOA`,
             duration: 8000,
@@ -192,6 +253,8 @@ export default function Admin() {
     .reduce((sum, o) => sum + o.total, 0)
   const lowStock = products.filter(p => p.stock_quantity <= p.min_stock)
   const pendingOrders = orders.filter(o => o.status === 'pendente').length
+  const pendingCreditCount = orders.filter(o => o.payment_status === 'pendente').length
+    + purchases.filter((p: any) => p.payment_status === 'pendente').length
 
   const expiringProducts = products.filter(p => {
     if (!p.expiry_date) return false
@@ -199,82 +262,169 @@ export default function Admin() {
     return days <= 7 && days >= 0
   })
 
-  const allTabs: { id: Tab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }[] = [
-    { id: 'overview',   label: 'Visão Geral',   icon: TrendingUp, badge: expiringProducts.length > 0 ? expiringProducts.length : undefined },
-    { id: 'orders',     label: 'Encomendas',    icon: ShoppingBag, badge: pendingOrders },
-    { id: 'products',   label: 'Produtos',      icon: Package                      },
-    { id: 'categories', label: 'Categorias',    icon: Filter                       },
-    { id: 'employees',  label: 'Equipa',        icon: Users                        },
-    { id: 'customers',  label: 'Clientes',      icon: UserCheck                    },
-    { id: 'cashflow',   label: 'Financeiro',    icon: Wallet                       },
-    { id: 'purchases',  label: 'Compras/Stock', icon: Receipt                      },
-    { id: 'suppliers',  label: 'Fornecedores',  icon: Truck                        },
-    { id: 'returns',    label: 'Devoluções',    icon: RotateCcw                    },
-    { id: 'loyalty',    label: 'Fidelização',   icon: Star                         },
-    { id: 'calendar',   label: 'Calendário',    icon: CalendarDays                 },
-    { id: 'delivery',   label: 'Zonas Entrega', icon: MapPin                       },
-    { id: 'promos',     label: 'Promoções',     icon: Tag                          },
-    { id: 'agt',        label: 'AGT / Fiscal',  icon: FileText                     },
-    { id: 'settings',   label: 'Configurações', icon: Settings                     },
-    { id: 'system',     label: 'Sistema',       icon: Database                     },
-    { id: 'reports',    label: 'Relatórios',    icon: FileBarChart2                },
-    { id: 'sessions',   label: 'Sessões Online', icon: Monitor, adminOnly: true    },
-    { id: 'stores',     label: 'Lojas',          icon: Store,   adminOnly: true    },
+  type TabDef = { id: Tab; label: string; icon: React.ElementType; badge?: number; adminOnly?: boolean }
+  const tabGroups: { id: string; label: string; icon: React.ElementType; tabs: TabDef[] }[] = [
+    { id: 'geral', label: 'Visão Geral', icon: TrendingUp, tabs: [
+      { id: 'overview',   label: 'Visão Geral',   icon: TrendingUp, badge: expiringProducts.length > 0 ? expiringProducts.length : undefined },
+    ]},
+    { id: 'vendas', label: 'Vendas', icon: ShoppingBag, tabs: [
+      { id: 'orders',     label: 'Encomendas',    icon: ShoppingBag, badge: pendingOrders },
+      { id: 'facturas',   label: 'Facturas',      icon: FileText },
+      { id: 'vendas',     label: 'Vendas PRIMAVERA',   icon: DollarSign, adminOnly: true },
+      { id: 'import',     label: 'Importar PRIMAVERA', icon: Upload, adminOnly: true },
+      { id: 'promos',     label: 'Promoções',     icon: Tag },
+      { id: 'loyalty',    label: 'Fidelização',   icon: Star },
+      { id: 'returns',    label: 'Devoluções',    icon: RotateCcw },
+      { id: 'calendar',   label: 'Calendário',    icon: CalendarDays },
+    ]},
+    { id: 'catalogo', label: 'Catálogo', icon: Package, tabs: [
+      { id: 'products',   label: 'Produtos',      icon: Package },
+      { id: 'categories', label: 'Categorias',    icon: Filter },
+      { id: 'delivery',   label: 'Zonas Entrega', icon: MapPin },
+    ]},
+    { id: 'compras', label: 'Compras', icon: Receipt, tabs: [
+      { id: 'purchases',  label: 'Compras/Stock', icon: Receipt },
+      { id: 'suppliers',  label: 'Fornecedores',  icon: Truck },
+    ]},
+    { id: 'financeiro', label: 'Financeiro', icon: Wallet, tabs: [
+      { id: 'cashflow',   label: 'Financeiro',    icon: Wallet },
+      { id: 'turno',      label: 'Turno de Caixa', icon: Clock },
+      { id: 'reports',    label: 'Relatórios',    icon: FileBarChart2 },
+      { id: 'agt',        label: 'AGT / Fiscal',  icon: FileText },
+      { id: 'contas',     label: 'Contas a Pagar/Receber', icon: HandCoins, badge: pendingCreditCount > 0 ? pendingCreditCount : undefined },
+    ]},
+    { id: 'contabilidade', label: 'Contabilidade', icon: BookOpen, tabs: [
+      { id: 'contabilidade', label: 'Contabilidade', icon: BookOpen },
+    ]},
+    { id: 'equipa', label: 'Equipa', icon: Users, tabs: [
+      { id: 'employees',  label: 'Equipa',        icon: Users },
+      { id: 'customers',  label: 'Clientes',      icon: UserCheck },
+      { id: 'sessions',   label: 'Sessões Online', icon: Monitor, adminOnly: true },
+    ]},
+    { id: 'sistema', label: 'Sistema', icon: Settings, tabs: [
+      { id: 'settings',   label: 'Configurações', icon: Settings },
+      { id: 'system',     label: 'Sistema',       icon: Database },
+      { id: 'stores',     label: 'Lojas',          icon: Store,   adminOnly: true },
+    ]},
   ]
 
-  // Filtra tabs: admin vê tudo, gerente vê só as áreas autorizadas (+ sessões excluído)
-  const tabs = isAdmin
-    ? allTabs
-    : allTabs.filter(t => !t.adminOnly && gerenteAreas.includes(t.id))
+  // Filtra tabs de cada grupo: admin vê tudo, gerente vê só as áreas autorizadas
+  const visibleGroups = tabGroups
+    .map(g => ({ ...g, tabs: isAdmin ? g.tabs : g.tabs.filter(t => !t.adminOnly && gerenteAreas.includes(t.id)) }))
+    .filter(g => g.tabs.length > 0)
+
+  const activeGroupId = visibleGroups.find(g => g.tabs.some(t => t.id === activeTab))?.id ?? visibleGroups[0]?.id
+  const activeGroup = visibleGroups.find(g => g.id === activeGroupId) ?? visibleGroups[0]
+  const tabs = activeGroup?.tabs ?? []
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 lg:gap-6 p-2 sm:p-4 lg:p-0">
-      {/* Mobile: tabs horizontais scrolláveis | Desktop: sidebar */}
-      <div className="lg:w-64 bg-white rounded-2xl shadow-xl p-3 lg:p-4 h-fit lg:sticky lg:top-4">
-        <div className="hidden lg:flex items-center gap-3 px-2 mb-6 text-cyan-600">
-          <Database className="w-6 h-6" />
-          <h2 className="font-black text-xl tracking-tight">Khrismir Admin</h2>
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-gray-900">Khrismir Admin</h2>
+          <p className="text-gray-500 text-sm">Painel de administração</p>
         </div>
-        <nav className="flex lg:flex-col gap-1.5 lg:gap-1 overflow-x-auto lg:overflow-x-visible pb-1 lg:pb-0 -mx-1 lg:mx-0 px-1 lg:px-0 scrollbar-hide">
+        <button
+          onClick={() => navigate('/pos')}
+          className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded-xl text-sm font-semibold transition shadow-sm"
+        >
+          <ShoppingBag className="w-4 h-4" /> Abrir POS
+        </button>
+      </div>
+
+      {/* ── Banner de instalação PWA ─────────────────────── */}
+      {showInstallBanner && (
+        <div className="flex items-center justify-between bg-cyan-50 border border-cyan-200 rounded-2xl px-4 py-3 text-sm">
+          <div className="flex items-center gap-2 text-cyan-800">
+            <span className="text-lg">📲</span>
+            <span className="font-medium">Instalar o app no seu dispositivo para acesso rápido offline</span>
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <button onClick={handleInstall} className="bg-cyan-600 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-cyan-700 transition">
+              Instalar
+            </button>
+            <button onClick={() => setShowInstallBanner(false)} className="text-cyan-400 hover:text-cyan-600 px-2">✕</button>
+          </div>
+        </div>
+      )}
+
+      {/* Nível 1 — categorias */}
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {visibleGroups.map(group => {
+          const groupBadge = group.tabs.reduce((s, t) => s + (t.badge || 0), 0)
+          return (
+            <button key={group.id}
+              onClick={() => setActiveTab(group.tabs[0].id)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap transition ${
+                activeGroupId === group.id ? 'bg-cyan-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}>
+              <group.icon className="w-4 h-4" />
+              {group.label}
+              {groupBadge ? (
+                <span className={`text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center ${activeGroupId === group.id ? 'bg-white/25' : 'bg-red-500 text-white'}`}>{groupBadge}</span>
+              ) : null}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Nível 2 — sub-separadores do grupo activo */}
+      {tabs.length > 1 && (
+        <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
           {tabs.map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 lg:gap-3 px-3 lg:px-4 py-2 lg:py-2.5 rounded-xl text-xs lg:text-sm font-medium transition-all whitespace-nowrap flex-shrink-0 lg:flex-shrink lg:w-full ${
-                activeTab === tab.id ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-200' : 'text-gray-500 hover:bg-gray-100'
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${
+                activeTab === tab.id ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}>
-              <tab.icon className="w-4 h-4 shrink-0" />
-              <span className="lg:flex-1 lg:text-left">{tab.label}</span>
+              <tab.icon className="w-4 h-4" />
+              {tab.label}
               {tab.badge ? (
                 <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{tab.badge}</span>
               ) : null}
             </button>
           ))}
-        </nav>
-      </div>
+        </div>
+      )}
 
-      <div className="flex-1 min-h-[80vh]">
-        {activeTab === 'overview'   && <OverviewTab orders={orders} total={todayTotal} lowStock={lowStock} products={products} />}
-        {activeTab === 'orders'     && <OrdersTab orders={orders} storeSettings={storeSettings} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
-        {activeTab === 'products'   && <ProductsTab products={products} setProducts={setProducts} categories={categories} />}
-        {activeTab === 'categories' && <CategoriesTab categories={categories} setCategories={setCategories} />}
-        {activeTab === 'employees'  && <EmployeesTab employees={employees} setEmployees={setEmployees} />}
-        {activeTab === 'customers'  && <CustomersTab orders={orders} />}
-        {activeTab === 'cashflow'   && <CashFlowTab cashFlow={cashFlow} setCashFlow={setCashFlow} />}
-        {activeTab === 'purchases'  && (
-          <PurchasesTab products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} />
-        )}
-        {activeTab === 'suppliers'  && <SuppliersTab />}
-        {activeTab === 'returns'    && <ReturnsTab orders={orders} products={products} setProducts={setProducts} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
-        {activeTab === 'loyalty'    && <LoyaltyTab orders={orders} />}
-        {activeTab === 'calendar'   && <CalendarTab orders={orders} />}
-        {activeTab === 'delivery'   && <DeliveryTab />}
-        {activeTab === 'promos'     && <PromosTab />}
-        {activeTab === 'agt'        && <AGTTab orders={orders} storeSettings={storeSettings} purchases={purchases} />}
-        {activeTab === 'settings'   && <SettingsTab settings={storeSettings} onSave={s => { setStoreSettings(s); saveSettings(s); syncSettings(s) }} />}
-        {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
-        {activeTab === 'reports'    && <ReportsTab orders={orders} purchases={purchases} storeSettings={storeSettings} />}
-        {activeTab === 'sessions'   && <SessionsTab />}
-        {activeTab === 'stores'     && <StoresTab />}
-      </div>
+      <Suspense fallback={<div className="flex items-center justify-center py-16 text-gray-400 text-sm gap-2"><div className="w-5 h-5 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" />A carregar...</div>}>
+        <div>
+          {activeTab === 'overview'   && <OverviewTab orders={orders} total={todayTotal} lowStock={lowStock} products={products} />}
+          {activeTab === 'orders'     && <OrdersTab orders={orders} storeSettings={storeSettings} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
+          {activeTab === 'products'   && <ProductsTab products={products} setProducts={setProducts} categories={categories} />}
+          {activeTab === 'categories' && <CategoriesTab categories={categories} setCategories={setCategories} />}
+          {activeTab === 'employees'  && <EmployeesTab employees={employees} setEmployees={setEmployees} />}
+          {activeTab === 'customers'  && <CustomersTab orders={orders} />}
+          {activeTab === 'cashflow'   && <CashFlowTab cashFlow={cashFlow} setCashFlow={setCashFlow} />}
+          {activeTab === 'turno'      && <TurnoTabLazy movements={[]} />}
+          {activeTab === 'purchases'  && (
+            <PurchasesTab products={products} setProducts={setProducts} purchases={purchases} setPurchases={setPurchases} />
+          )}
+          {activeTab === 'suppliers'  && <SuppliersTab />}
+          {activeTab === 'returns'    && <ReturnsTab orders={orders} products={products} setProducts={setProducts} setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }} />}
+          {activeTab === 'loyalty'    && <LoyaltyTab orders={orders} />}
+          {activeTab === 'calendar'   && <CalendarTab orders={orders} />}
+          {activeTab === 'delivery'   && <DeliveryTab />}
+          {activeTab === 'promos'     && <PromosTab />}
+          {activeTab === 'agt'        && <AGTTab orders={orders} storeSettings={storeSettings} purchases={purchases} />}
+          {activeTab === 'settings'   && <SettingsTab settings={storeSettings} onSave={s => { setStoreSettings(s); saveSettings(s); syncSettings(s) }} />}
+          {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
+          {activeTab === 'reports'    && <ReportsTab orders={orders} purchases={purchases} storeSettings={storeSettings} />}
+          {activeTab === 'sessions'   && <SessionsTab />}
+          {activeTab === 'stores'     && <StoresTab />}
+          {activeTab === 'vendas'     && <VendasTab />}
+          {activeTab === 'import'     && <ImportPrimaveraTab categories={categories} />}
+          {activeTab === 'contabilidade' && <AccountingTab />}
+          {activeTab === 'facturas'   && <InvoicesTab products={products} />}
+          {activeTab === 'contas'     && (
+            <AccountsPayableReceivableTab
+              orders={orders}
+              purchases={purchases}
+              setOrders={o => { setOrders(o); localStorage.setItem('khrismir_orders', JSON.stringify(o)) }}
+              setPurchases={p => { setPurchases(p); localStorage.setItem('khrismir_purchases', JSON.stringify(p)) }}
+            />
+          )}
+        </div>
+      </Suspense>
     </div>
   )
 }
@@ -301,6 +451,52 @@ function OverviewTab({ orders, total, lowStock, products }: { orders: Order[]; t
     return days <= 7 && days >= 0
   })
 
+  // ── Comparação com períodos anteriores ───────────────────────────────────
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1)
+  const totalOntem = orders
+    .filter(o => new Date(o.created_at).toDateString() === yesterday.toDateString() && o.status !== 'cancelado')
+    .reduce((s, o) => s + o.total, 0)
+  const deltaHoje = totalOntem > 0 ? Math.round(((total - totalOntem) / totalOntem) * 100) : null
+
+  const now = new Date()
+  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+  const lastMonthEnd   = new Date(now.getFullYear(), now.getMonth(), 0)
+  const totalMesPassado = orders
+    .filter(o => {
+      const d = new Date(o.created_at)
+      return d >= lastMonthStart && d <= lastMonthEnd && o.status !== 'cancelado'
+    })
+    .reduce((s, o) => s + o.total, 0)
+  const deltaMes = totalMesPassado > 0 ? Math.round(((monthTotal - totalMesPassado) / totalMesPassado) * 100) : null
+  const mesPLabel = lastMonthStart.toLocaleDateString('pt-AO', { month: 'short' })
+
+  const deltaTag = (d: number | null, suffix = '') => {
+    if (d === null) return null
+    const color = d >= 0 ? 'text-green-200' : 'text-red-200'
+    return <span className={`text-xs font-semibold ${color}`}>{d >= 0 ? '▲' : '▼'} {Math.abs(d)}%{suffix}</span>
+  }
+
+  // ── Análise de margens ────────────────────────────────────────────────────
+  const purchases: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_purchases') || '[]') } catch { return [] } })()
+  // Custo médio por product_id
+  const avgCost: Record<string, number> = {}
+  for (const p of purchases) {
+    if (!avgCost[p.product_id]) avgCost[p.product_id] = p.unit_price
+    else avgCost[p.product_id] = (avgCost[p.product_id] + p.unit_price) / 2
+  }
+  // Margem por produto (cruzar com products)
+  const margins = products
+    .filter(p => avgCost[p.id] && p.price > 0)
+    .map(p => ({
+      name: p.name,
+      sellPrice: p.price,
+      costPrice: avgCost[p.id],
+      margin: Math.round(((p.price - avgCost[p.id]) / p.price) * 100),
+    }))
+    .sort((a, b) => b.margin - a.margin)
+  const top5 = margins.slice(0, 5)
+  const bot5 = [...margins].sort((a, b) => a.margin - b.margin).slice(0, 5)
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <h2 className="text-2xl font-bold text-gray-800">Dashboard</h2>
@@ -308,18 +504,22 @@ function OverviewTab({ orders, total, lowStock, products }: { orders: Order[]; t
         <div className="bg-gradient-to-br from-green-500 to-emerald-600 p-5 rounded-2xl text-white shadow-lg">
           <p className="opacity-80 text-xs font-medium uppercase">Vendas Hoje</p>
           <h3 className="text-2xl font-black mt-1">{total.toLocaleString()} Kz</h3>
+          <p className="mt-1 opacity-70 text-xs">{deltaTag(deltaHoje, ' vs ontem') ?? <span className="opacity-50">sem dados de ontem</span>}</p>
         </div>
         <div className="bg-gradient-to-br from-blue-500 to-cyan-600 p-5 rounded-2xl text-white shadow-lg">
           <p className="opacity-80 text-xs font-medium uppercase">Vendas Mês</p>
           <h3 className="text-2xl font-black mt-1">{monthTotal.toLocaleString()} Kz</h3>
+          <p className="mt-1 opacity-70 text-xs">{deltaTag(deltaMes, ` vs ${mesPLabel}`) ?? <span className="opacity-50">sem dados anteriores</span>}</p>
         </div>
         <div className={`p-5 rounded-2xl shadow-lg text-white ${monthProfit >= 0 ? 'bg-gradient-to-br from-purple-500 to-violet-600' : 'bg-gradient-to-br from-red-500 to-rose-600'}`}>
           <p className="opacity-80 text-xs font-medium uppercase">Lucro Mês</p>
           <h3 className="text-2xl font-black mt-1">{monthProfit >= 0 ? '+' : ''}{monthProfit.toLocaleString()} Kz</h3>
+          <p className="mt-1 opacity-70 text-xs">Entradas − Saídas</p>
         </div>
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-          <p className="text-gray-400 text-xs font-medium uppercase">Alertas Stock</p>
-          <h3 className={`text-2xl font-black mt-1 ${lowStock.length > 0 ? 'text-red-500' : 'text-gray-800'}`}>{lowStock.length} itens</h3>
+        <div className={`p-5 rounded-2xl shadow-lg text-white ${lowStock.length > 0 ? 'bg-gradient-to-br from-orange-500 to-red-500' : 'bg-gradient-to-br from-gray-400 to-slate-500'}`}>
+          <p className="opacity-80 text-xs font-medium uppercase">Alertas Stock</p>
+          <h3 className="text-2xl font-black mt-1">{lowStock.length} {lowStock.length === 1 ? 'alerta' : 'alertas'}</h3>
+          <p className="mt-1 opacity-70 text-xs">{lowStock.length > 0 ? 'Reposição necessária' : 'Tudo OK'}</p>
         </div>
       </div>
 
@@ -381,13 +581,58 @@ function OverviewTab({ orders, total, lowStock, products }: { orders: Order[]; t
         </div>
       )}
 
+      {/* ── Análise de Margens ─────────────────────────────── */}
+      {margins.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="bg-white rounded-2xl shadow-sm p-5">
+            <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-green-600" /> Top 5 — Maior Margem
+            </h3>
+            <table className="w-full text-sm">
+              <thead><tr className="text-xs text-gray-400 border-b"><th className="pb-2 text-left">Produto</th><th className="pb-2 text-right">Venda</th><th className="pb-2 text-right">Custo</th><th className="pb-2 text-right">Margem</th></tr></thead>
+              <tbody className="divide-y">
+                {top5.map(p => (
+                  <tr key={p.name}>
+                    <td className="py-2 font-medium truncate max-w-[120px]">{p.name}</td>
+                    <td className="py-2 text-right text-gray-500">{p.sellPrice.toLocaleString()}</td>
+                    <td className="py-2 text-right text-gray-500">{Math.round(p.costPrice).toLocaleString()}</td>
+                    <td className="py-2 text-right font-bold text-green-600">{p.margin}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="bg-white rounded-2xl shadow-sm p-5">
+            <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-500" /> Bottom 5 — Menor Margem
+            </h3>
+            <table className="w-full text-sm">
+              <thead><tr className="text-xs text-gray-400 border-b"><th className="pb-2 text-left">Produto</th><th className="pb-2 text-right">Venda</th><th className="pb-2 text-right">Custo</th><th className="pb-2 text-right">Margem</th></tr></thead>
+              <tbody className="divide-y">
+                {bot5.map(p => (
+                  <tr key={p.name}>
+                    <td className="py-2 font-medium truncate max-w-[120px]">{p.name}</td>
+                    <td className="py-2 text-right text-gray-500">{p.sellPrice.toLocaleString()}</td>
+                    <td className="py-2 text-right text-gray-500">{Math.round(p.costPrice).toLocaleString()}</td>
+                    <td className={`py-2 text-right font-bold ${p.margin < 20 ? 'text-red-500' : 'text-amber-500'}`}>{p.margin}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <AppQRCard />
     </div>
   )
 }
 
 /* ─── CARTÃO QR CODE (partilha com clientes) ─── */
-const APP_URL = 'https://peixaria-khrismir.vercel.app'
+// Aponta directo para o ecrã de cadastro — um cliente já reconhecido
+// (ver useAuthStore.restoreClientSession) é redireccionado automaticamente
+// para a loja, sem passar pelo cadastro.
+const APP_URL = 'https://peixaria-khrismir.vercel.app/#/auth?view=register'
 
 function AppQRCard() {
   const [showModal, setShowModal] = useState(false)
@@ -517,24 +762,44 @@ function AppQRCard() {
 
 /* ─── ENCOMENDAS ─── */
 function OrdersTab({ orders, setOrders, storeSettings }: { orders: Order[]; setOrders: (o: Order[]) => void; storeSettings: StoreSettings }) {
-  const [filter, setFilter] = useState<OrderStatus | 'all'>('all')
+  const [filter,       setFilter]       = useState<OrderStatus | 'all'>('all')
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'app' | 'primavera'>('all')
   const [search, setSearch] = useState('')
 
-  const filtered = orders.filter(o => {
-    const ms = filter === 'all' || o.status === filter
-    const mq = !search || o.order_number.toLowerCase().includes(search.toLowerCase()) || (o.customer_name || '').toLowerCase().includes(search.toLowerCase())
-    return ms && mq
+  const filtered = orders.filter((o: any) => {
+    if (o.doc_type) return false // facturas manuais (FA/FP) têm o seu próprio separador "Facturas"
+    const ms  = filter === 'all' || o.status === filter
+    const mq  = !search || o.order_number.toLowerCase().includes(search.toLowerCase()) || (o.customer_name || '').toLowerCase().includes(search.toLowerCase())
+    const src = o.source ?? 'app'
+    const mSrc = sourceFilter === 'all' || src === sourceFilter
+    return ms && mq && mSrc
   })
 
   const updateStatus = (id: string, status: OrderStatus) => {
     setOrders(orders.map(o => o.id === id ? { ...o, status, updated_at: new Date().toISOString() } : o))
     syncOrderStatus(id, status)
+    // Uma encomenda cancelada deixa de contar como venda — anula o movimento de
+    // caixa e o lançamento contabilístico que a venda original tinha gerado.
+    if (status === 'cancelado') cancelSaleMovement(id)
     toast.success(`Estado: ${statusConfig[status].label}`)
   }
 
   const cancelOrder = (id: string) => {
     if (!confirm('Cancelar esta encomenda?')) return
     updateStatus(id, 'cancelado')
+  }
+
+  const printPrimaveraDoc = async (order: any) => {
+    let saleInfo: PrimaveraDocInfo | null = null
+    if (order.primavera_ref && isSupabaseReady()) {
+      const { data } = await supabase
+        .from('sales')
+        .select('doc_type,doc_number,doc_series,total_net,total_vat')
+        .eq('primavera_id', order.primavera_ref)
+        .single()
+      saleInfo = data as PrimaveraDocInfo | null
+    }
+    printPrimaveraInvoice(order, saleInfo, storeSettings)
   }
 
   const whatsApp = (order: Order) => {
@@ -568,63 +833,93 @@ function OrdersTab({ orders, setOrders, storeSettings }: { orders: Order[]; setO
               </button>
             ))}
           </div>
+          <div className="flex gap-1.5 flex-wrap mt-1">
+            <span className="text-xs text-gray-400 self-center mr-1">Fonte:</span>
+            {([['all','Todas'], ['app','App'], ['primavera','PRIMAVERA']] as const).map(([val, label]) => (
+              <button key={val} onClick={() => setSourceFilter(val)}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium ${sourceFilter === val ? (val === 'primavera' ? 'bg-indigo-600 text-white' : 'bg-gray-700 text-white') : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {filtered.length === 0 ? <p className="text-center text-gray-500 py-8">Nenhuma encomenda encontrada</p> : (
           <div className="space-y-4">
-            {filtered.map(order => (
-              <div key={order.id} className="border border-gray-100 rounded-2xl p-4 hover:shadow-md transition">
+            {filtered.map((order: any) => {
+              const isPrim = (order.source ?? 'app') === 'primavera'
+              return (
+              <div key={order.id} className={`border rounded-2xl p-4 hover:shadow-md transition ${isPrim ? 'border-indigo-100 bg-indigo-50/30' : 'border-gray-100'}`}>
                 <div className="flex flex-wrap justify-between items-start gap-3 mb-3">
                   <div>
-                    <h4 className="font-bold text-lg">{order.order_number}</h4>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold text-lg">{order.order_number}</h4>
+                      {isPrim && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-indigo-100 text-indigo-700">PRIMAVERA</span>
+                      )}
+                      {order.payment_status === 'pendente' && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700">FIADO</span>
+                      )}
+                    </div>
                     <p className="text-sm text-gray-500">{order.customer_name || 'Venda POS'} • {new Date(order.created_at).toLocaleString('pt-AO')}</p>
-                    <p className="text-xs text-gray-400 capitalize">{order.delivery_type === 'delivery' ? '🚚 Entrega' : '🏪 Retirada'} • {order.payment_type}</p>
+                    {!isPrim && <p className="text-xs text-gray-400 capitalize">{order.delivery_type === 'delivery' ? '🚚 Entrega' : '🏪 Retirada'} • {order.payment_type}</p>}
                     {order.delivery_address && <p className="text-xs text-gray-400">📍 {order.delivery_address}</p>}
                     {order.discount_code && <p className="text-xs text-green-600">🏷️ Desconto: {order.discount_code} (-{(order.discount_amount || 0).toLocaleString()} Kz)</p>}
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${statusConfig[order.status].color}`}>{statusConfig[order.status].label}</span>
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${statusConfig[order.status as OrderStatus]?.color ?? 'bg-gray-100 text-gray-600'}`}>{statusConfig[order.status as OrderStatus]?.label ?? order.status}</span>
                     <span className="font-bold text-cyan-600">{order.total.toLocaleString()} AOA</span>
                   </div>
                 </div>
-                <div className="bg-gray-50 rounded-xl p-3 mb-3 text-sm space-y-1">
-                  {order.items.map((item, i) => (
+                <div className="bg-white/70 rounded-xl p-3 mb-3 text-sm space-y-1">
+                  {(order.items ?? []).map((item: any, i: number) => (
                     <div key={i} className="flex justify-between">
-                      <span>{item.product_name} ({item.preparation}) × {Number(item.quantity).toFixed(2)}</span>
+                      <span>{item.product_name}{!isPrim && item.preparation ? ` (${item.preparation})` : ''} × {Number(item.quantity).toFixed(isPrim ? 3 : 2)}</span>
                       <span className="font-medium">{Number(item.total_price).toLocaleString()} AOA</span>
                     </div>
                   ))}
                   {(order.delivery_fee ?? 0) > 0 && (
                     <div className="flex justify-between text-gray-500">
-                      <span>Taxa de entrega ({order.delivery_zone})</span>
+                      <span>Taxa de entrega{order.delivery_distance_km != null ? ` (${order.delivery_distance_km.toFixed(1)} km)` : ''}</span>
                       <span>{(order.delivery_fee || 0).toLocaleString()} AOA</span>
                     </div>
                   )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {statusConfig[order.status].next && (
-                    <button onClick={() => updateStatus(order.id, statusConfig[order.status].next!)}
+                  {!isPrim && statusConfig[order.status as OrderStatus]?.next && (
+                    <button onClick={() => updateStatus(order.id, statusConfig[order.status as OrderStatus].next!)}
                       className="flex-1 bg-cyan-600 text-white py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">
-                      → {statusConfig[statusConfig[order.status].next!].label}
+                      → {statusConfig[statusConfig[order.status as OrderStatus].next!].label}
                     </button>
                   )}
-                  {order.status !== 'cancelado' && order.status !== 'entregue' && (
+                  {!isPrim && order.status !== 'cancelado' && order.status !== 'entregue' && (
                     <button onClick={() => cancelOrder(order.id)}
                       className="px-4 py-2 border border-red-200 text-red-600 rounded-xl text-sm font-medium hover:bg-red-50 transition">
                       Cancelar
                     </button>
                   )}
-                  <button onClick={() => printInvoice(order, storeSettings)}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-gray-700 text-white rounded-xl text-sm font-medium hover:bg-gray-800 transition">
-                    <Printer className="w-4 h-4" /> Fatura
-                  </button>
-                  <a href={whatsApp(order)} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 transition">
-                    <MessageCircle className="w-4 h-4" /> WhatsApp
-                  </a>
+                  {!isPrim && (
+                    <button onClick={() => printInvoice(order, storeSettings)}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-gray-700 text-white rounded-xl text-sm font-medium hover:bg-gray-800 transition">
+                      <Printer className="w-4 h-4" /> Fatura
+                    </button>
+                  )}
+                  {isPrim && (
+                    <button onClick={() => printPrimaveraDoc(order)}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-indigo-700 text-white rounded-xl text-sm font-medium hover:bg-indigo-800 transition">
+                      <Printer className="w-4 h-4" /> Imprimir
+                    </button>
+                  )}
+                  {!isPrim && storeSettings.whatsapp && (
+                    <a href={whatsApp(order)} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 transition">
+                      <MessageCircle className="w-4 h-4" /> WhatsApp
+                    </a>
+                  )}
                 </div>
               </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
@@ -705,13 +1000,32 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
     win.document.close()
   }
 
+  const lowStockList = products.filter(p => p.stock_quantity <= p.min_stock)
+  const waSt = getSettings()
+  const waStockAlert = () => {
+    const msg = `⚠️ *ALERTA DE STOCK — ${waSt.name}*\n\n` +
+      lowStockList.map(p => `• ${p.name}: ${p.stock_quantity} ${p.unit} (mín. ${p.min_stock})`).join('\n') +
+      `\n\nData: ${new Date().toLocaleString('pt-AO')}`
+    const phone = waSt.whatsapp?.replace(/\D/g, '') ?? ''
+    window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank')
+  }
+
   return (
     <div className="bg-white rounded-2xl shadow-sm p-6">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-bold">Inventário</h2>
-        <button onClick={openNew} className="bg-cyan-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium hover:bg-cyan-700 transition">
-          <Plus className="w-4 h-4" /> Novo Produto
-        </button>
+        <div className="flex gap-2">
+          {lowStockList.length > 0 && (
+            <button onClick={waStockAlert}
+              className="flex items-center gap-1.5 bg-amber-50 border border-amber-300 text-amber-700 px-3 py-2 rounded-xl text-sm font-medium hover:bg-amber-100 transition">
+              <AlertTriangle className="w-4 h-4" />
+              {lowStockList.length} em falta · WhatsApp
+            </button>
+          )}
+          <button onClick={openNew} className="bg-cyan-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium hover:bg-cyan-700 transition">
+            <Plus className="w-4 h-4" /> Novo Produto
+          </button>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
@@ -944,7 +1258,12 @@ function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmplo
       setIsOpen(false)
       setForm({ name: '', email: '', phone: '', password: '', role: 'employee' })
       setAccessAreas([])
-      toast.success(result.supabaseId ? '✅ Funcionário criado no Supabase!' : '✅ Acesso local criado!')
+      if (result.supabaseId) {
+        toast.success('✅ Funcionário criado no Supabase!')
+      } else {
+        toast.warning('⚠️ Criado apenas neste dispositivo — só funciona aqui até se resolver o problema com a cloud.', { duration: 8000 })
+      }
+      if (result.error) toast.error(result.error, { duration: 10000 })
     } else {
       toast.error(result.error ?? 'Erro ao criar funcionário')
     }
@@ -957,6 +1276,13 @@ function EmployeesTab({ employees, setEmployees }: { employees: User[]; setEmplo
     localStorage.setItem('khrismir_employees', JSON.stringify(upEmp))
     const all = JSON.parse(localStorage.getItem('khrismir_clients') || '[]').filter((u: any) => u.id !== id)
     localStorage.setItem('khrismir_clients', JSON.stringify(all))
+    // Sem isto, o próximo pullAll() (que agora traz todos os perfis, não só clientes)
+    // trazia de volta o funcionário "removido" — o perfil continuava no Supabase.
+    if (isSupabaseReady() && supabase) {
+      supabase.from('profiles').delete().eq('id', id).then(({ error }) => {
+        if (error) console.error('[EmployeesTab.remove]', error.message)
+      })
+    }
     toast.success('Funcionário removido')
   }
 
@@ -1287,23 +1613,71 @@ function CashFlowTab(_props: { cashFlow: CashFlow[]; setCashFlow: (c: CashFlow[]
 /* ─── COMPRAS / STOCK ─── */
 function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
   const [form, setForm] = useState({ pid: '', qty: '', price: '', provider: '', account: '' })
+  const [isCredit, setIsCredit] = useState(false)
   const cfAccounts: any[] = (() => { try { return JSON.parse(localStorage.getItem('cf_accounts') || '[]') } catch { return [] } })()
+  const suppliers: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_suppliers') || '[]') } catch { return [] } })()
+
+  // ── Sync PRIMAVERA ────────────────────────────────────────────────────────
+  const [syncState, setSyncState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const triggerPrimSync = async () => {
+    setSyncState('running')
+    try {
+      const r = await fetch('http://localhost:5175/sync', { signal: AbortSignal.timeout(5000) })
+      const d = await r.json()
+      if (!d.ok) { setSyncState('error'); setTimeout(() => setSyncState('idle'), 3000); return }
+
+      syncPollRef.current = setInterval(async () => {
+        try {
+          const s = await fetch('http://localhost:5175/status', { signal: AbortSignal.timeout(3000) })
+          const sd = await s.json()
+          if (!sd.running) {
+            clearInterval(syncPollRef.current!)
+            // Recarregar compras do Supabase
+            const result = await pullAll()
+            if (result.ok) {
+              const fresh = (() => { try { return JSON.parse(localStorage.getItem('khrismir_purchases') || '[]') } catch { return [] } })()
+              setPurchases(fresh)
+            }
+            setSyncState('done')
+            toast.success('✅ Compras PRIMAVERA sincronizadas!')
+            setTimeout(() => setSyncState('idle'), 4000)
+          }
+        } catch { clearInterval(syncPollRef.current!); setSyncState('idle') }
+      }, 2500)
+    } catch {
+      setSyncState('error')
+      toast.error('Servidor de sync não disponível (localhost:5175)')
+      setTimeout(() => setSyncState('idle'), 4000)
+    }
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => () => { if (syncPollRef.current) clearInterval(syncPollRef.current) }, [])
 
   const add = (e: React.FormEvent) => {
     e.preventDefault()
     const prod = products.find((p: any) => p.id === form.pid)
-    const total = Number(form.qty) * Number(form.price)
-    const newP = { id: Date.now().toString(), product_id: form.pid, product_name: prod?.name ?? '', quantity: Number(form.qty), unit_price: Number(form.price), total_price: total, supplier: form.provider, created_at: new Date().toISOString() }
+    const qty   = Number(form.qty)
+    const price = Number(form.price)
+    if (!qty || qty <= 0 || !price || price <= 0) { toast.error('Quantidade e preço devem ser maiores que 0'); return }
+    const total = qty * price
+    const newP = { id: crypto.randomUUID(), product_id: form.pid, product_name: prod?.name ?? '', quantity: qty, unit_price: price, total_price: total, supplier: form.provider, created_at: new Date().toISOString(), payment_status: isCredit ? 'pendente' : 'pago' }
     const upP = [newP, ...purchases]; setPurchases(upP); localStorage.setItem('khrismir_purchases', JSON.stringify(upP))
-    const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + Number(form.qty) } : p)
+    const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + qty } : p)
     setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
     syncProducts(upProd)   // ← actualiza stock no Supabase para todos os dispositivos
 
     // Regista automaticamente no Fluxo de Caixa (ID determinístico evita duplicados no sync)
-    registerPurchaseMovement(total, prod?.name || 'Produto', form.provider, form.account || undefined, newP.id)
+    // — ou, se for a crédito, só lança em Contas a Pagar (sem sair dinheiro da Caixa já)
+    if (isCredit) {
+      registerCreditPurchase(newP.id, prod?.name || 'Produto', total)
+    } else {
+      registerPurchaseMovement(total, prod?.name || 'Produto', form.provider, form.account || undefined, newP.id)
+    }
     syncPurchases([newP])
 
-    setForm({ pid: '', qty: '', price: '', provider: '', account: '' }); toast.success('Compra registada!')
+    setForm({ pid: '', qty: '', price: '', provider: '', account: '' }); setIsCredit(false); toast.success('Compra registada!')
   }
   const exportExcel = () => {
     const rows = purchases.map((p: any) => ({ Data: new Date(p.created_at).toLocaleDateString('pt-AO'), Produto: products.find((x: any) => x.id === p.product_id)?.name || '', Quantidade: p.quantity, 'Preço Custo': p.unit_price, 'Total Custo': p.total_price, Fornecedor: p.supplier || '' }))
@@ -1316,34 +1690,85 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <form onSubmit={add} className="bg-white p-6 rounded-2xl shadow-sm space-y-4">
         <h3 className="font-bold text-lg">Entrada de Stock</h3>
+        {products.length === 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 flex items-start gap-2">
+            <span className="text-lg leading-none">⚠️</span>
+            <span>Sem produtos criados. Vá a <strong>Produtos</strong> para adicionar produtos primeiro.</span>
+          </div>
+        )}
         <select value={form.pid} onChange={e => setForm({ ...form, pid: e.target.value })} className="w-full border p-2 rounded-xl" required>
           <option value="">Escolha o Produto</option>
           {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <input type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} placeholder="Quantidade (kg)" className="w-full border p-2 rounded-xl" required min="0.1" step="0.1" />
-        <input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="Preço Custo (AOA/kg)" className="w-full border p-2 rounded-xl" required min="0" />
-        <input value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} placeholder="Fornecedor" className="w-full border p-2 rounded-xl" />
-        {cfAccounts.length > 0 && (
+        <input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="Preço Custo (AOA/kg)" className="w-full border p-2 rounded-xl" required min="1" step="1" />
+        {suppliers.length > 0 ? (
+          <select value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} className="w-full border p-2 rounded-xl">
+            <option value="">Seleccionar Fornecedor</option>
+            {suppliers.map((s: any) => <option key={s.id} value={s.name}>{s.name}</option>)}
+          </select>
+        ) : (
+          <input value={form.provider} onChange={e => setForm({ ...form, provider: e.target.value })} placeholder="Fornecedor (opcional)" className="w-full border p-2 rounded-xl" />
+        )}
+        {!isCredit && cfAccounts.length > 0 && (
           <select value={form.account} onChange={e => setForm({ ...form, account: e.target.value })} className="w-full border p-2 rounded-xl">
             <option value="">Conta de Pagamento (automático)</option>
             {cfAccounts.map((a: any) => <option key={a.id} value={a.name}>{a.name}</option>)}
           </select>
         )}
+        <label className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 cursor-pointer">
+          <input type="checkbox" checked={isCredit} onChange={e => setIsCredit(e.target.checked)} className="w-4 h-4" />
+          <span>🧾 Compra a Crédito (pagar depois — vai para Contas a Pagar)</span>
+        </label>
         <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">Registar Compra</button>
       </form>
       <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm overflow-hidden">
-        <div className="flex justify-between items-center p-4 border-b">
+        <div className="flex justify-between items-center p-4 border-b gap-2 flex-wrap">
           <h3 className="font-bold">Histórico de Compras</h3>
-          {purchases.length > 0 && <button onClick={exportExcel} className="flex items-center gap-2 bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition"><Download className="w-4 h-4" /> Excel</button>}
+          <div className="flex gap-2">
+            <button
+              onClick={triggerPrimSync}
+              disabled={syncState === 'running'}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition ${
+                syncState === 'running' ? 'bg-indigo-100 text-indigo-600 cursor-wait' :
+                syncState === 'done'    ? 'bg-green-100 text-green-700' :
+                syncState === 'error'   ? 'bg-red-100 text-red-600' :
+                'bg-indigo-600 text-white hover:bg-indigo-700'
+              }`}
+            >
+              <RotateCcw className={`w-3.5 h-3.5 ${syncState === 'running' ? 'animate-spin' : ''}`} />
+              {syncState === 'running' ? 'A sincronizar…' :
+               syncState === 'done'    ? '✓ Actualizado' :
+               syncState === 'error'   ? '✕ Sem serviço' :
+               'Sync PRIMAVERA'}
+            </button>
+            {purchases.length > 0 && (
+              <button onClick={exportExcel} className="flex items-center gap-2 bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition">
+                <Download className="w-4 h-4" /> Excel
+              </button>
+            )}
+          </div>
         </div>
         <table className="w-full text-left">
           <thead className="bg-gray-50 text-xs font-bold text-gray-400 uppercase">
-            <tr><th className="p-4">Produto</th><th className="p-4">Qtd.</th><th className="p-4 text-right">Total Custo</th></tr>
+            <tr><th className="p-4">Produto</th><th className="p-4">Data</th><th className="p-4">Fornecedor</th><th className="p-4">Qtd.</th><th className="p-4 text-right">Total Custo</th></tr>
           </thead>
           <tbody className="divide-y">
-            {purchases.map((p: any) => (
-              <tr key={p.id}>
-                <td className="p-4 font-medium">{products.find((x: any) => x.id === p.product_id)?.name}</td>
+            {purchases.length === 0 ? (
+              <tr><td colSpan={5} className="p-8 text-center text-gray-400 text-sm">Sem compras registadas</td></tr>
+            ) : purchases.map((p: any) => (
+              <tr key={p.id} className={`hover:bg-gray-50 ${p.source === 'primavera' ? 'bg-indigo-50/30' : ''}`}>
+                <td className="p-4 font-medium">
+                  <span>{products.find((x: any) => x.id === p.product_id)?.name ?? p.product_name ?? '—'}</span>
+                  {p.source === 'primavera' && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-xs font-bold bg-indigo-100 text-indigo-700">PRIMAVERA</span>
+                  )}
+                  {p.payment_status === 'pendente' && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700">FIADO</span>
+                  )}
+                </td>
+                <td className="p-4 text-sm text-gray-500">{new Date(p.created_at).toLocaleDateString('pt-AO')}</td>
+                <td className="p-4 text-sm text-gray-600">{p.supplier || '—'}</td>
                 <td className="p-4 text-sm">{p.quantity} kg</td>
                 <td className="p-4 text-right text-red-600 font-bold">{Number(p.total_price).toLocaleString()} Kz</td>
               </tr>
@@ -1357,65 +1782,93 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
 
 /* ─── ZONAS DE ENTREGA ─── */
 function DeliveryTab() {
-  const load = (): DeliveryZone[] => { try { return JSON.parse(localStorage.getItem('khrismir_delivery_zones') || '[]') } catch { return [] } }
-  const [zones, setZones] = useState<DeliveryZone[]>(load)
-  const [form, setForm]   = useState({ name: '', price: '', description: '' })
+  const [settings, setSettings] = useState<StoreSettings>(getSettings)
+  const [refPoints, setRefPoints] = useState<MapReference[]>(() => {
+    try { return JSON.parse(localStorage.getItem('khrismir_map_references') || 'null') ?? DEFAULT_MAP_REFERENCES }
+    catch { return DEFAULT_MAP_REFERENCES }
+  })
+  const [addingRef, setAddingRef] = useState(false)
+  const [newRefName, setNewRefName] = useState('')
+  const [newRefPos, setNewRefPos] = useState<{ lat: number; lng: number } | null>(null)
 
-  const persist = (z: DeliveryZone[]) => { setZones(z); localStorage.setItem('khrismir_delivery_zones', JSON.stringify(z)); syncDeliveryZones(z) }
+  const storePos = settings.store_lat != null && settings.store_lng != null
+    ? { lat: settings.store_lat, lng: settings.store_lng } : null
 
-  const add = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!form.name.trim() || !form.price) return
-    persist([...zones, { id: Date.now().toString(), name: form.name.trim(), price: Number(form.price), description: form.description }])
-    setForm({ name: '', price: '', description: '' }); toast.success('Zona adicionada!')
+  const saveStorePos = (lat: number, lng: number) => {
+    const updated = { ...settings, store_lat: lat, store_lng: lng }
+    setSettings(updated)
+    saveSettings(updated)
+    syncSettings(updated)
   }
 
+  const persistRefs = (r: MapReference[]) => {
+    setRefPoints(r)
+    localStorage.setItem('khrismir_map_references', JSON.stringify(r))
+    syncMapReferences(r)
+  }
+
+  const confirmAddRef = () => {
+    if (!newRefName.trim() || !newRefPos) { toast.error('Dê um nome e marque um ponto no mapa'); return }
+    persistRefs([...refPoints, { id: crypto.randomUUID(), name: newRefName.trim(), lat: newRefPos.lat, lng: newRefPos.lng }])
+    setAddingRef(false); setNewRefName(''); setNewRefPos(null)
+    toast.success('Ponto de referência adicionado!')
+  }
+
+  const removeRef = (id: string) => { persistRefs(refPoints.filter(r => r.id !== id)); deleteMapReference(id) }
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <div className="bg-white rounded-2xl p-6 shadow-sm">
-        <h2 className="text-xl font-bold mb-6">Nova Zona de Entrega</h2>
-        <form onSubmit={add} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Nome da Zona *</label>
-            <input type="text" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              placeholder="Ex: Centralidade, Lubango Centro" required className="w-full border p-3 rounded-xl" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Taxa de Entrega (AOA) *</label>
-            <input type="number" value={form.price} onChange={e => setForm(f => ({ ...f, price: e.target.value }))}
-              placeholder="0" required min="0" className="w-full border p-3 rounded-xl" />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Descrição (opcional)</label>
-            <input type="text" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-              placeholder="Ex: Bairros próximos" className="w-full border p-3 rounded-xl" />
-          </div>
-          <button type="submit" className="w-full bg-cyan-600 text-white py-3 rounded-xl font-bold hover:bg-cyan-700 transition">
-            <Plus className="w-4 h-4 inline mr-2" />Adicionar Zona
-          </button>
-        </form>
-        <p className="text-xs text-gray-400 mt-4">💡 Se não houver zonas, a entrega é grátis. O cliente escolhe a zona no carrinho.</p>
+    <div className="space-y-6">
+      <div className="bg-cyan-50 border border-cyan-200 rounded-2xl p-4 text-sm text-cyan-800">
+        <strong>Preço de entrega automático por distância:</strong> 500 Kz até 2 km da loja; acima disso soma +100 Kz por cada 500 m extra (distância em linha recta). O cliente marca a localização dele no mapa ao finalizar o pedido — já não escolhe uma zona fixa.
       </div>
+
       <div className="bg-white rounded-2xl p-6 shadow-sm">
-        <h2 className="text-xl font-bold mb-6">Zonas Configuradas</h2>
-        {zones.length === 0 ? (
-          <div className="text-center py-12 text-gray-400">
-            <MapPin className="w-12 h-12 mx-auto mb-3 opacity-30" />
-            <p>Nenhuma zona de entrega configurada</p>
-            <p className="text-sm mt-1">Entrega gratuita para todos</p>
+        <h2 className="text-xl font-bold mb-1">Localização da Loja</h2>
+        <p className="text-sm text-gray-500 mb-4">Marque o ponto exacto da loja — é a partir daqui que a distância de cada cliente é calculada. O círculo mostra o raio de 2 km com preço mínimo (500 Kz).</p>
+        <DeliveryMapPicker
+          center={storePos ?? { lat: -14.9172, lng: 13.4925 }}
+          marker={storePos}
+          onMarkerChange={saveStorePos}
+          radiusKm={2}
+          referencePoints={refPoints.map(r => ({ name: r.name, lat: r.lat, lng: r.lng }))}
+          heightClass="h-96"
+        />
+      </div>
+
+      <div className="bg-white rounded-2xl p-6 shadow-sm">
+        <div className="flex justify-between items-center mb-1">
+          <h2 className="text-xl font-bold">Pontos de Referência</h2>
+          <button onClick={() => setAddingRef(v => !v)} className="flex items-center gap-1.5 bg-gray-800 text-white px-3 py-1.5 rounded-xl text-sm font-bold hover:bg-gray-900 transition">
+            <Plus className="w-4 h-4" /> Adicionar
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-4">Marcadores fixos mostrados no mapa (municípios, bairros) — só para orientação, não afectam o preço.</p>
+
+        {addingRef && (
+          <div className="border border-dashed border-cyan-300 rounded-2xl p-4 mb-4 space-y-3 bg-cyan-50/40">
+            <input value={newRefName} onChange={e => setNewRefName(e.target.value)} placeholder="Nome (ex: Palanca)"
+              className="w-full border p-2.5 rounded-xl text-sm" />
+            <DeliveryMapPicker
+              center={storePos ?? { lat: -14.9172, lng: 13.4925 }}
+              marker={newRefPos}
+              onMarkerChange={(lat, lng) => setNewRefPos({ lat, lng })}
+              heightClass="h-64"
+            />
+            <div className="flex gap-2">
+              <button onClick={confirmAddRef} className="flex-1 bg-cyan-600 text-white py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition">Guardar Ponto</button>
+              <button onClick={() => { setAddingRef(false); setNewRefName(''); setNewRefPos(null) }} className="px-4 border rounded-xl text-sm">Cancelar</button>
+            </div>
           </div>
+        )}
+
+        {refPoints.length === 0 ? (
+          <p className="text-center text-gray-400 py-8 text-sm">Nenhum ponto de referência ainda</p>
         ) : (
-          <div className="space-y-3">
-            {zones.map(z => (
-              <div key={z.id} className="flex justify-between items-center p-4 border border-gray-100 rounded-2xl">
-                <div>
-                  <p className="font-bold">{z.name}</p>
-                  {z.description && <p className="text-xs text-gray-500">{z.description}</p>}
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-bold text-cyan-600">{z.price === 0 ? 'Grátis' : `${z.price.toLocaleString()} Kz`}</span>
-                  <button onClick={() => { persist(zones.filter(x => x.id !== z.id)); deleteZone(z.id) }} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-                </div>
+          <div className="space-y-2">
+            {refPoints.map(r => (
+              <div key={r.id} className="flex justify-between items-center p-3 border border-gray-100 rounded-xl">
+                <span className="font-medium text-sm flex items-center gap-2"><MapPin className="w-4 h-4 text-gray-400" /> {r.name}</span>
+                <button onClick={() => removeRef(r.id)} className="text-red-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
               </div>
             ))}
           </div>
@@ -1542,10 +1995,32 @@ function PromosTab() {
 }
 
 /* ─── AGT / FISCAL ─── */
-function AGTTab({ orders, storeSettings, purchases }: { orders: Order[]; storeSettings: StoreSettings; purchases: Purchase[] }) {
+function AGTTab({ orders: allOrders, storeSettings, purchases }: { orders: Order[]; storeSettings: StoreSettings; purchases: Purchase[] }) {
+  // Facturas Proforma (FP) não são documento fiscal — nunca entram no SAF-T nem nas contagens
+  const orders = allOrders.filter(o => o.doc_type !== 'FP')
   const ivaRate = storeSettings.iva_rate / 100
   const totalFaturado = orders.filter(o => o.status !== 'cancelado').reduce((s, o) => s + o.total, 0)
   const _totalIVA = totalFaturado * ivaRate; void _totalIVA
+
+  const [agtConfig, setAgtConfig] = useState<AGTConfig>(() => getAGTConfig())
+  const [testingAgt, setTestingAgt] = useState(false)
+  const agtReady = isAGTConfigured(agtConfig)
+
+  const saveAgt = () => {
+    saveAGTConfig(agtConfig)
+    toast.success('Configuração AGT guardada')
+  }
+
+  const testAgt = async () => {
+    setTestingAgt(true)
+    try {
+      const result = await testAGTConnection(agtConfig)
+      if (result.ok) toast.success(result.message)
+      else toast.error(result.message)
+    } finally {
+      setTestingAgt(false)
+    }
+  }
 
   const [saftYear, setSaftYear] = useState(new Date().getFullYear())
 
@@ -1616,6 +2091,71 @@ function AGTTab({ orders, storeSettings, purchases }: { orders: Order[]; storeSe
           <p className="text-gray-500 text-sm">IVA {storeSettings.iva_rate}% • NIF: {storeSettings.nif} • Decreto Presidencial n.º 71/25</p>
         </div>
         <div className="bg-orange-100 text-orange-700 px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wide">SAF-T/AO 1.01.01</div>
+      </div>
+
+      {/* ── Ligação Faturação Eletrónica AGT ─────────────────────── */}
+      <div className="bg-gray-50 border border-gray-100 rounded-2xl p-6 mb-8">
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+          <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+            <Link2 className="w-5 h-5 text-cyan-600" /> Ligação Faturação Eletrónica AGT
+          </h3>
+          <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${agtReady ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-600'}`}>
+            {agtReady ? <CheckCircle className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+            {agtReady ? 'Configurado' : 'Sem credenciais'}
+          </span>
+        </div>
+
+        {!agtReady && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4 text-sm text-amber-800">
+            Ainda sem credenciais AGT. Registe-se em{' '}
+            <a href="https://quiosqueagt.minfin.gov.ao" target="_blank" rel="noopener noreferrer" className="font-bold underline inline-flex items-center gap-1">
+              quiosqueagt.minfin.gov.ao <ExternalLink className="w-3 h-3" />
+            </a>{' '}
+            para obter a chave privada e o número de certificado do software. Enquanto não configurado, nenhuma factura é submetida.
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Ambiente</label>
+            <select value={agtConfig.environment} onChange={e => setAgtConfig(c => ({ ...c, environment: e.target.value as AGTConfig['environment'] }))}
+              className="w-full border p-2.5 rounded-xl text-sm">
+              <option value="sandbox">Sandbox (testes)</option>
+              <option value="producao">Produção</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Nº de Certificado do Software</label>
+            <input type="text" value={agtConfig.certificateNumber} onChange={e => setAgtConfig(c => ({ ...c, certificateNumber: e.target.value }))}
+              placeholder="Emitido pela AGT após certificação" className="w-full border p-2.5 rounded-xl text-sm" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-xs font-medium text-gray-500 mb-1">URL do Endpoint AGT</label>
+            <input type="text" value={agtConfig.endpointUrl} onChange={e => setAgtConfig(c => ({ ...c, endpointUrl: e.target.value }))}
+              placeholder="https://…quiosqueagt.minfin.gov.ao/…" className="w-full border p-2.5 rounded-xl text-sm font-mono" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-xs font-medium text-gray-500 mb-1">Chave Privada (PEM)</label>
+            <textarea value={agtConfig.privateKeyPem} onChange={e => setAgtConfig(c => ({ ...c, privateKeyPem: e.target.value }))}
+              placeholder="-----BEGIN PRIVATE KEY-----…" rows={4}
+              className="w-full border p-2.5 rounded-xl text-xs font-mono" />
+            <p className="text-xs text-gray-400 mt-1">Fica guardada apenas neste dispositivo — nunca é sincronizada com a cloud.</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 md:col-span-2">
+            <input type="checkbox" checked={agtConfig.enabled} onChange={e => setAgtConfig(c => ({ ...c, enabled: e.target.checked }))} />
+            Activar submissão automática de facturas à AGT
+          </label>
+        </div>
+
+        <div className="flex gap-2 mt-4">
+          <button onClick={saveAgt} className="flex items-center gap-2 bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-gray-900 transition">
+            <Save className="w-4 h-4" /> Guardar
+          </button>
+          <button onClick={testAgt} disabled={testingAgt}
+            className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition disabled:opacity-50">
+            {testingAgt ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />} Testar Ligação
+          </button>
+        </div>
       </div>
 
       {(() => {
@@ -2033,11 +2573,11 @@ function SessionsTab() {
 /* ─── SISTEMA ─── */
 function SystemTab({ products, categories }: { products: Product[]; categories: Category[] }) {
   const [syncing,      setSyncing]      = useState(false)
-  const [backupMeta,   setBackupMeta]   = useState<BackupMeta | null>(getLastBackupMeta)
-  const [backingUp,    setBackingUp]    = useState(false)
   const [deploying,    setDeploying]    = useState(false)
   const [deployLogs,   setDeployLogs]   = useState<string[]>([])
   const [deployResult, setDeployResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [resetConfirmText, setResetConfirmText] = useState('')
+  const [showResetModal, setShowResetModal] = useState(false)
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   const isElectron = !!(window as any).electronAPI?.isElectron
@@ -2046,23 +2586,6 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [deployLogs])
-
-  const handleBackupNow = async () => {
-    setBackingUp(true)
-    // Faz push completo para Supabase (o Realtime notifica os outros dispositivos)
-    await pushAll()
-    setBackupMeta(getLastBackupMeta())
-    setBackingUp(false)
-    toast.success('✅ Dados enviados para a cloud!')
-  }
-
-  const handleRestoreLocalBackup = () => {
-    if (!backupMeta) { toast.error('Sem backup automático disponível'); return }
-    if (!confirm(`Restaurar backup de ${new Date(backupMeta.timestamp).toLocaleString('pt-AO')}?\nOs dados actuais serão substituídos.`)) return
-    const ok = restoreLocalBackup()
-    if (ok) { toast.success('✅ Backup restaurado localmente!'); setTimeout(() => window.location.reload(), 1200) }
-    else toast.error('Falha ao restaurar backup')
-  }
 
   const handleDeployAll = async () => {
     if (!isElectron) return
@@ -2196,13 +2719,15 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
   }
 
   const handleReset = async () => {
-    if (!confirm('⚠️ ATENÇÃO\n\nEsta acção apaga TODOS os dados:\n• Produtos, categorias, encomendas\n• Compras, caixa, movimentos\n• Turnos, promoções, entregas\n\nOs dados serão eliminados do local E da cloud.\n\nContinuar?')) return
-    if (!confirm('Última confirmação — não é possível recuperar os dados depois.\n\nApagar tudo?')) return
+    setShowResetModal(true)
+  }
 
+  const doReset = async () => {
+    if (resetConfirmText !== 'APAGAR') { toast.error('Escreva APAGAR para confirmar'); return }
+    setShowResetModal(false)
+    setResetConfirmText('')
     const tid = toast.loading('A apagar todos os dados…')
-    // Limpar localStorage
     localStorage.clear()
-    // Limpar Supabase
     await clearAllData()
     toast.dismiss(tid)
     toast.success('Sistema reiniciado — todos os dados apagados.')
@@ -2243,48 +2768,152 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
     }
   }
 
+  // ── PRIMAVERA sync state (live from local server) ──────────────────────────
+  const SYNC_SERVER = 'http://localhost:5175'
+  const [primStatus, setPrimStatus] = useState<{
+    running: boolean; last_sync: string | null; log_tail: string; server_ok: boolean
+  }>({ running: false, last_sync: localStorage.getItem('khrismir_last_sync'), log_tail: '', server_ok: false })
+  const [primSyncing, setPrimSyncing]   = useState(false)
+  const [showPrimLog, setShowPrimLog]   = useState(false)
+  const primPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const fetchPrimStatus = async () => {
+    try {
+      const r = await fetch(`${SYNC_SERVER}/status`, { signal: AbortSignal.timeout(3000) })
+      const d = await r.json()
+      setPrimStatus({ running: d.running, last_sync: d.last_sync, log_tail: d.log_tail, server_ok: true })
+      return d
+    } catch {
+      setPrimStatus(s => ({ ...s, server_ok: false }))
+      return null
+    }
+  }
+
+  useEffect(() => { fetchPrimStatus() }, []) // eslint-disable-line
+
+  const triggerPrimSync = async () => {
+    setPrimSyncing(true)
+    try {
+      const r = await fetch(`${SYNC_SERVER}/sync`, { signal: AbortSignal.timeout(5000) })
+      const d = await r.json()
+      if (d.ok) {
+        toast.success('▶ Sync PRIMAVERA iniciado em background…')
+        // Poll status até terminar
+        primPollRef.current = setInterval(async () => {
+          const s = await fetchPrimStatus()
+          if (s && !s.running) {
+            clearInterval(primPollRef.current!)
+            setPrimSyncing(false)
+            toast.success('✅ Sync PRIMAVERA concluído!')
+            pullAll()
+          }
+        }, 3000)
+      } else {
+        toast.warning(d.error ?? 'Sync já em execução')
+        setPrimSyncing(false)
+      }
+    } catch {
+      toast.error('Servidor de sync não disponível (localhost:5175). Verifica se o serviço está activo.')
+      setPrimSyncing(false)
+    }
+  }
+
+  useEffect(() => () => { if (primPollRef.current) clearInterval(primPollRef.current) }, [])
+
+  const lastSyncLabel = primStatus.last_sync
+    ? (() => {
+        const mins = Math.round((Date.now() - new Date(primStatus.last_sync!.replace(' ', 'T')).getTime()) / 60000)
+        if (mins < 1)  return 'agora mesmo'
+        if (mins < 60) return `há ${mins} min`
+        const hrs = Math.floor(mins / 60)
+        const d   = Math.floor(hrs / 24)
+        if (d > 0) return `há ${d} dia${d > 1 ? 's' : ''}`
+        return `há ${hrs}h${mins % 60 > 0 ? ` ${mins % 60}min` : ''}`
+      })()
+    : null
+  const syncRecent = primStatus.last_sync
+    ? (Date.now() - new Date(primStatus.last_sync.replace(' ', 'T')).getTime()) < 7200000
+    : false
+
   return (
     <div className="bg-white rounded-2xl p-6 shadow-sm border-t-4 border-gray-800 max-w-2xl space-y-5">
       <h2 className="text-xl font-bold">Configurações de Sistema</h2>
 
-      {/* ── Backup Automático ──────────────────────────────── */}
-      <div className="p-4 border-2 border-cyan-200 rounded-2xl bg-cyan-50/40 space-y-3">
-        <div className="flex items-start justify-between flex-wrap gap-2">
-          <div>
-            <h4 className="font-bold text-cyan-800 flex items-center gap-2">
-              <RotateCcw className="w-4 h-4" /> Backup Automático (30 em 30 min)
-            </h4>
-            <p className="text-xs text-cyan-600 mt-0.5">
-              Guarda snapshot local → envia para Supabase → importa dados actualizados da cloud.
+      {/* ── Sincronização PRIMAVERA (live) ─────────────────── */}
+      <div className={`p-4 rounded-2xl border-2 space-y-3 ${
+        primStatus.running ? 'border-blue-300 bg-blue-50/40' :
+        syncRecent ? 'border-green-200 bg-green-50/40' : 'border-amber-200 bg-amber-50/40'
+      }`}>
+        {/* Cabeçalho */}
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h4 className="font-bold flex items-center gap-2 text-gray-800">
+            <Database className="w-4 h-4 text-indigo-600" /> Sincronização PRIMAVERA
+          </h4>
+          <div className="flex items-center gap-2">
+            {primStatus.server_ok
+              ? <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700">● Serviço activo</span>
+              : <span className="px-2 py-1 rounded-full text-xs font-bold bg-red-100 text-red-600">✕ Serviço offline</span>
+            }
+            {primStatus.running && (
+              <span className="px-2 py-1 rounded-full text-xs font-bold bg-blue-100 text-blue-700 animate-pulse">⟳ A sincronizar…</span>
+            )}
+          </div>
+        </div>
+
+        {/* Última sync */}
+        <div className="text-xs space-y-1">
+          {primStatus.last_sync ? (
+            <p className={syncRecent ? 'text-green-700' : 'text-amber-700'}>
+              <span className="font-semibold">Última sync:</span>{' '}
+              {primStatus.last_sync} ({lastSyncLabel})
             </p>
-          </div>
-          <span className="px-2 py-1 rounded-full text-xs font-bold bg-green-100 text-green-700">● Activo</span>
+          ) : (
+            <p className="text-amber-600 italic">Nenhuma sincronização registada.</p>
+          )}
+          <p className="text-gray-400">Serviço: <code className="bg-gray-100 px-1 rounded text-gray-600">localhost:5175</code> &nbsp;·&nbsp; Horário: cada 1h + ao arrancar o Windows</p>
         </div>
 
-        {backupMeta && (
-          <div className="text-xs text-cyan-700 bg-white/70 rounded-xl px-3 py-2 border border-cyan-100">
-            <span className="font-bold">Último backup:</span>{' '}
-            {new Date(backupMeta.timestamp).toLocaleString('pt-AO')}{' '}
-            &nbsp;•&nbsp; {backupMeta.keys} tabelas{' '}
-            &nbsp;•&nbsp; {(backupMeta.size / 1024).toFixed(1)} KB
-          </div>
-        )}
-        {!backupMeta && (
-          <p className="text-xs text-cyan-500 italic">Ainda sem backup automático nesta sessão.</p>
-        )}
-
+        {/* Botões */}
         <div className="flex gap-2 flex-wrap">
-          <button onClick={handleBackupNow} disabled={backingUp}
-            className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-700 transition disabled:opacity-60">
-            <RotateCcw className={`w-4 h-4 ${backingUp ? 'animate-spin' : ''}`} />
-            {backingUp ? 'A fazer backup…' : 'Fazer Backup Agora'}
+          <button
+            onClick={triggerPrimSync}
+            disabled={primSyncing || primStatus.running || !primStatus.server_ok}
+            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-700 transition disabled:opacity-50"
+          >
+            <RotateCcw className={`w-4 h-4 ${(primSyncing || primStatus.running) ? 'animate-spin' : ''}`} />
+            {primStatus.running ? 'A sincronizar…' : primSyncing ? 'A iniciar…' : 'Sincronizar Agora'}
           </button>
-          <button onClick={handleRestoreLocalBackup} disabled={!backupMeta}
-            className="flex items-center gap-2 bg-white border-2 border-cyan-300 text-cyan-700 px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-50 transition disabled:opacity-40">
-            <Upload className="w-4 h-4" /> Restaurar Último Backup
+          <button
+            onClick={fetchPrimStatus}
+            className="flex items-center gap-2 px-3 py-2 border border-gray-200 text-gray-600 rounded-xl text-sm hover:bg-gray-50 transition"
+          >
+            <RotateCcw className="w-3.5 h-3.5" /> Actualizar estado
           </button>
+          {primStatus.log_tail && (
+            <button
+              onClick={() => setShowPrimLog(v => !v)}
+              className="text-xs text-indigo-600 hover:text-indigo-800 underline ml-auto self-center"
+            >
+              {showPrimLog ? 'Ocultar log' : 'Ver últimas linhas do log'}
+            </button>
+          )}
         </div>
+
+        {/* Log tail */}
+        {showPrimLog && primStatus.log_tail && (
+          <pre className="bg-gray-900 text-green-400 rounded-xl p-3 text-xs overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">
+            {primStatus.log_tail}
+          </pre>
+        )}
+
+        {/* Aviso servidor offline */}
+        {!primStatus.server_ok && (
+          <p className="text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2">
+            ⚠ O servidor de sync não está acessível. Certifica-te que a tarefa <code>PrimaveraSync_Server</code> está activa no Agendador de Tarefas, ou reinicia o computador.
+          </p>
+        )}
       </div>
+
 
       {/* ── Deploy Completo (apenas Electron) ─────────────── */}
       {isElectron && (
@@ -2383,6 +3012,35 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
           </button>
         </div>
       </div>
+      {showResetModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm space-y-4">
+            <div className="flex items-center gap-3">
+              <span className="text-3xl">⚠️</span>
+              <div>
+                <h3 className="font-black text-gray-900">Apagar Todos os Dados</h3>
+                <p className="text-xs text-gray-500">Esta acção é irreversível</p>
+              </div>
+            </div>
+            <p className="text-sm text-gray-600">Serão eliminados <strong>todos</strong> os produtos, encomendas, movimentos de caixa, turnos e configurações — do dispositivo <em>e</em> da cloud.</p>
+            <div>
+              <label className="block text-sm font-bold text-red-700 mb-1">Escreva <code className="bg-red-50 px-1 rounded">APAGAR</code> para confirmar:</label>
+              <input
+                type="text"
+                value={resetConfirmText}
+                onChange={e => setResetConfirmText(e.target.value)}
+                placeholder="APAGAR"
+                className="w-full border-2 border-red-300 p-3 rounded-xl font-mono text-center text-lg focus:outline-none focus:border-red-500"
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => { setShowResetModal(false); setResetConfirmText('') }} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm hover:bg-gray-50">Cancelar</button>
+              <button onClick={doReset} disabled={resetConfirmText !== 'APAGAR'} className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition">Apagar Tudo</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2423,7 +3081,12 @@ function SuppliersTab() {
     setForm({ name: '', nif: '', phone: '', email: '', address: '', notes: '' })
   }
 
-  const del = (id: string) => { if (!confirm('Eliminar fornecedor?')) return; persist(suppliers.filter(s => s.id !== id)); toast.success('Eliminado') }
+  const del = (id: string) => {
+    if (!confirm('Eliminar fornecedor?')) return
+    persist(suppliers.filter(s => s.id !== id))
+    deleteSupplier(id) // sem isto, o fornecedor "eliminado" reaparecia na sincronização seguinte
+    toast.success('Eliminado')
+  }
   const doEdit = (s: Supplier) => { setEditing(s); setForm({ name: s.name, nif: s.nif || '', phone: s.phone || '', email: s.email || '', address: s.address || '', notes: s.notes || '' }) }
 
   return (
@@ -2488,7 +3151,7 @@ function ReturnsTab({ orders, products, setProducts, setOrders }: {
   const deliveredOrders = orders.filter(o => o.status === 'entregue')
   const returnedIds = new Set(returns.map(r => r.order_id))
 
-  const persist = (r: Return[]) => { setReturns(r); localStorage.setItem('khrismir_returns', JSON.stringify(r)) }
+  const persist = (r: Return[]) => { setReturns(r); localStorage.setItem('khrismir_returns', JSON.stringify(r)); syncReturns(r) }
 
   const processReturn = (e: React.FormEvent) => {
     e.preventDefault()
@@ -2594,7 +3257,20 @@ function ReturnsTab({ orders, products, setProducts, setOrders }: {
 
 /* ─── FIDELIZAÇÃO ─── */
 function LoyaltyTab({ orders }: { orders: Order[] }) {
-  const POINTS_VALUE = 1
+  const [loyaltyRules, setLoyaltyRules] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('khrismir_loyalty_rules') || 'null') ?? { points_per_1000: 1, point_value: 1 } }
+    catch { return { points_per_1000: 1, point_value: 1 } }
+  })
+  const [editingRules, setEditingRules] = useState(false)
+  const [rulesForm, setRulesForm] = useState(loyaltyRules)
+
+  const saveRules = () => {
+    setLoyaltyRules(rulesForm)
+    localStorage.setItem('khrismir_loyalty_rules', JSON.stringify(rulesForm))
+    setEditingRules(false)
+    toast.success('Regras actualizadas!')
+  }
+
   const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]').filter((c: any) => c.role === 'client')
   const [transactions, setTransactions] = useState<LoyaltyTransaction[]>(() => { try { return JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]') } catch { return [] } })
   const [redeemModal, setRedeemModal] = useState<any>(null)
@@ -2618,7 +3294,8 @@ function LoyaltyTab({ orders }: { orders: Order[] }) {
     const updated = [...transactions, trans]
     setTransactions(updated)
     localStorage.setItem('khrismir_loyalty', JSON.stringify(updated))
-    toast.success(`${pts} pontos resgatados = ${(pts * POINTS_VALUE).toLocaleString()} AOA desconto`)
+    syncLoyalty([trans])
+    toast.success(`${pts} pontos resgatados = ${(pts * loyaltyRules.point_value).toLocaleString()} AOA desconto`)
     setRedeemModal(null)
     setRedeemPoints('')
   }
@@ -2630,13 +3307,35 @@ function LoyaltyTab({ orders }: { orders: Order[] }) {
           <p className="opacity-80 text-xs font-medium uppercase">Clientes no Programa</p>
           <h3 className="text-2xl font-black mt-1">{clientsWithPoints.length}</h3>
         </div>
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-          <p className="text-gray-400 text-xs font-medium uppercase">Regra de Pontos</p>
-          <h3 className="text-sm font-bold mt-1 text-gray-800">1 ponto por cada 1.000 AOA gastos</h3>
-        </div>
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
-          <p className="text-gray-400 text-xs font-medium uppercase">Valor do Ponto</p>
-          <h3 className="text-sm font-bold mt-1 text-gray-800">1 ponto = 1 AOA desconto</h3>
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 col-span-2">
+          {editingRules ? (
+            <div className="space-y-3">
+              <p className="text-xs font-bold text-gray-500 uppercase">Editar Regras</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Pontos por cada 1.000 AOA</label>
+                  <input type="number" min="1" value={rulesForm.points_per_1000} onChange={e => setRulesForm({...rulesForm, points_per_1000: Number(e.target.value)})} className="w-full border p-2 rounded-lg text-sm" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Valor do ponto (AOA)</label>
+                  <input type="number" min="1" value={rulesForm.point_value} onChange={e => setRulesForm({...rulesForm, point_value: Number(e.target.value)})} className="w-full border p-2 rounded-lg text-sm" />
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setEditingRules(false)} className="flex-1 py-1.5 border rounded-lg text-sm">Cancelar</button>
+                <button onClick={saveRules} className="flex-1 py-1.5 bg-yellow-500 text-white rounded-lg text-sm font-bold">Guardar</button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="space-y-1">
+                <p className="text-gray-400 text-xs font-medium uppercase">Regra de Pontos</p>
+                <p className="text-sm font-bold text-gray-800">{loyaltyRules.points_per_1000} ponto(s) por cada 1.000 AOA gastos</p>
+                <p className="text-xs text-gray-500">1 ponto = {loyaltyRules.point_value} AOA desconto</p>
+              </div>
+              <button onClick={() => { setRulesForm(loyaltyRules); setEditingRules(true) }} className="text-xs bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg font-medium transition">✏️ Editar Regras</button>
+            </div>
+          )}
         </div>
       </div>
       <div className="bg-white rounded-2xl shadow-sm p-6">
@@ -2673,7 +3372,7 @@ function LoyaltyTab({ orders }: { orders: Order[] }) {
               <div>
                 <label className="block text-sm font-medium mb-1">Pontos a resgatar</label>
                 <input type="number" value={redeemPoints} onChange={e => setRedeemPoints(e.target.value)} min="1" max={redeemModal.currentPoints} required className="w-full border p-3 rounded-xl" />
-                {redeemPoints && <p className="text-xs text-green-600 mt-1">= {(Number(redeemPoints) * POINTS_VALUE).toLocaleString()} AOA desconto</p>}
+                {redeemPoints && <p className="text-xs text-green-600 mt-1">= {(Number(redeemPoints) * loyaltyRules.point_value).toLocaleString()} AOA desconto</p>}
               </div>
               <button type="submit" className="w-full bg-yellow-400 text-white py-3 rounded-xl font-bold hover:bg-yellow-500 transition">Confirmar Resgate</button>
               <button type="button" onClick={() => setRedeemModal(null)} className="w-full text-gray-400 text-sm hover:text-gray-600">Cancelar</button>
@@ -2748,7 +3447,7 @@ function CalendarTab({ orders }: { orders: Order[] }) {
                     <p className="text-xs text-gray-600">{o.customer_name || 'Cliente'}</p>
                     {o.delivery_address && <p className="text-xs text-gray-400">📍 {o.delivery_address}</p>}
                     {o.customer_phone && <p className="text-xs text-gray-400">📞 {o.customer_phone}</p>}
-                    {o.delivery_zone && <p className="text-xs text-gray-400">Zona: {o.delivery_zone}</p>}
+                    {o.delivery_distance_km != null && <p className="text-xs text-gray-400">Distância: {o.delivery_distance_km.toFixed(1)} km</p>}
                   </div>
                   <div className="text-right">
                     <span className={`text-xs px-2 py-0.5 rounded-full font-bold ${statusConfig[o.status as OrderStatus]?.color || 'bg-gray-100 text-gray-600'}`}>

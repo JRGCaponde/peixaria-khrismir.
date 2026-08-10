@@ -5,12 +5,14 @@ import type { Product, Category, CartItem, Order, OrderStatus, PaymentType, Prep
 import { getSettings } from '../lib/settings'
 import { printInvoice, printBusinessInvoice } from '../utils/invoice'
 import { printReceipt } from '../utils/receipt'
-import { registerSaleMovement } from '../lib/cashflow'
+import { registerSaleMovement, registerCreditSale } from '../lib/cashflow'
 import { getOpenShift } from './_TurnoTab'
+import { useAuthStore } from '../stores/useAuthStore'
 import { calcOrderHash } from '../utils/saft'
-import { pullAll, syncOrderStatus, syncOrder, syncProductStock, syncCashFlow } from '../lib/sync'
+import { pullAll, syncOrderStatus, syncOrder, syncProductStock, syncCashFlow, syncLoyalty, syncPromos } from '../lib/sync'
 import { notifyDataChange } from '../lib/realtime'
 import { isSupabaseReady } from '../lib/supabase'
+import { maybeQueueForAGT } from '../lib/agt'
 
 // Sem dados fictícios — carrega apenas do localStorage / Supabase
 const initialCategories: Category[] = []
@@ -23,12 +25,15 @@ interface POSCartItem extends CartItem {
 
 export default function POS() {
   const settings = getSettings()
+  const { user } = useAuthStore()
   const [products, setProducts] = useState<Product[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [cart, setCart] = useState<POSCartItem[]>([])
   const [paymentType, setPaymentType] = useState<PaymentType>('multicaixa')
+  const [isCredit, setIsCredit] = useState(false)
+  const [creditCustomerName, setCreditCustomerName] = useState('')
   const [selectedBank, setSelectedBank] = useState('')
   const [bankAccounts, setBankAccounts] = useState<{ id: string; name: string }[]>([])
   const [showWeightDialog, setShowWeightDialog] = useState(false)
@@ -163,7 +168,7 @@ export default function POS() {
     saveCart(newCart)
   }
 
-  const cartSubtotal = cart.reduce((sum, c) => sum + c.weight * c.price * c.quantity, 0)
+  const cartSubtotal = cart.reduce((sum, c) => sum + c.weight * (c.price ?? 0) * c.quantity, 0)
   const discountAmount = appliedPromo
     ? appliedPromo.discount_type === 'percentage' ? Math.round(cartSubtotal * appliedPromo.discount_value / 100) : appliedPromo.discount_value
     : 0
@@ -182,28 +187,46 @@ export default function POS() {
   const handleCheckout = () => {
     if (cart.length === 0) { toast.error('Carrinho vazio'); return }
 
-    const openShift = getOpenShift()
+    const openShift = getOpenShift(user?.id)
     if (!openShift) {
-      toast.warning('Abra um turno antes de processar vendas. Vá a Caixa → Turno.')
+      toast.warning('Abra o seu turno antes de processar vendas. Vá a Caixa → Turno.')
+      return
+    }
+    if (isCredit && !creditCustomerName.trim()) {
+      toast.warning('Indique o nome do cliente para a venda a fiado.')
       return
     }
 
-    const orderNumber = `PKH-${Math.floor(10000 + Math.random() * 90000)}`
-    const now = Date.now()
+    const orderNumber = (() => {
+      try {
+        const counter = JSON.parse(localStorage.getItem('khrismir_invoice_counter') || 'null')
+        if (counter?.next && counter?.year) {
+          const year = new Date().getFullYear()
+          const seq = counter.year === year ? counter.next : 1
+          const newCounter = { year, next: seq + 1 }
+          localStorage.setItem('khrismir_invoice_counter', JSON.stringify(newCounter))
+          return `${year}/${String(seq).padStart(3, '0')}`
+        }
+      } catch { /* sem contador, usa fallback */ }
+      return `PKH-${Math.floor(10000 + Math.random() * 90000)}`
+    })()
+    const orderId = crypto.randomUUID()
 
     const orderBase = {
-      id: now.toString(),
+      id: orderId,
       order_number: orderNumber,
       status: 'pronto' as const,
       payment_type: paymentType,
       delivery_type: 'retirada' as const,
+      customer_name: isCredit ? creditCustomerName.trim() : undefined,
+      payment_status: (isCredit ? 'pendente' : 'pago') as 'pago' | 'pendente',
       subtotal: cartSubtotal,
       discount_code: appliedPromo?.code,
       discount_amount: discountAmount || undefined,
       total: cartTotal,
-      items: cart.map((c, i) => ({
-        id: `${now}-${i}`,
-        order_id: now.toString(),
+      items: cart.map((c, _i) => ({
+        id: crypto.randomUUID(),
+        order_id: orderId,
         product_id: c.id,
         product_name: c.name,
         quantity: c.weight * c.quantity,
@@ -220,6 +243,9 @@ export default function POS() {
     orders.unshift(newOrder)
     localStorage.setItem('khrismir_orders', JSON.stringify(orders))
 
+    // Sem credenciais AGT configuradas → não faz nada (ver src/lib/agt.ts)
+    maybeQueueForAGT(newOrder, settings).catch(() => {})
+
     const storedProducts = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
     cart.forEach(cartItem => {
       const idx = storedProducts.findIndex((p: Product) => p.id === cartItem.id)
@@ -229,25 +255,32 @@ export default function POS() {
     // Actualiza o estado React imediatamente para reflectir o novo stock na UI
     setProducts(storedProducts)
 
-    const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
-    registerSaleMovement(cartTotal, orderNumber, paymentType, now.toString(), bankAccount)
+    if (isCredit) {
+      registerCreditSale(orderId, orderNumber, cartTotal)
+    } else {
+      const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
+      registerSaleMovement(cartTotal, orderNumber, paymentType, orderId, bankAccount)
+    }
 
     if (newOrder.customer_id) {
-      const loyaltyTx = { id: Date.now().toString(), client_id: newOrder.customer_id, client_name: newOrder.customer_name || '', points: Math.floor(cartTotal / 1000), type: 'earned', order_id: newOrder.id, created_at: new Date().toISOString() }
+      const loyaltyTx = { id: crypto.randomUUID(), client_id: newOrder.customer_id, client_name: newOrder.customer_name || '', points: Math.floor(cartTotal / 1000), type: 'earned', order_id: newOrder.id, created_at: new Date().toISOString() }
       const loyalty = JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]')
       loyalty.push(loyaltyTx)
       localStorage.setItem('khrismir_loyalty', JSON.stringify(loyalty))
+      syncLoyalty([loyaltyTx])
     }
 
     if (appliedPromo) {
       const promos: PromoCode[] = JSON.parse(localStorage.getItem('khrismir_promos') || '[]')
       const pi = promos.findIndex(p => p.id === appliedPromo.id)
-      if (pi !== -1) { promos[pi].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)) }
+      if (pi !== -1) { promos[pi].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)); syncPromos(promos) }
     }
 
     saveCart([])
     setAppliedPromo(null)
     setPromoInput('')
+    setIsCredit(false)
+    setCreditCustomerName('')
     setLastOrder(newOrder)
     setShowReceipt(true)
     toast.success(`Venda ${orderNumber} concluída!`)
@@ -295,17 +328,21 @@ export default function POS() {
   const pendingCount = orders.filter(o => o.status === 'pendente').length
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Tab bar */}
-      <div className="flex gap-2 bg-white rounded-xl shadow-sm p-1.5 w-fit">
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900">Ponto de Venda</h2>
+        <p className="text-gray-500 text-sm">Registo de vendas e encomendas</p>
+      </div>
+
+      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
         <button onClick={() => setActiveTab('pos')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${activeTab === 'pos' ? 'bg-cyan-600 text-white shadow' : 'text-gray-500 hover:bg-gray-100'}`}>
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${activeTab === 'pos' ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <Receipt className="w-4 h-4" /> Caixa (POS)
         </button>
         <button onClick={() => setActiveTab('orders')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition ${activeTab === 'orders' ? 'bg-cyan-600 text-white shadow' : 'text-gray-500 hover:bg-gray-100'}`}>
+          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${activeTab === 'orders' ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           <ShoppingBag className="w-4 h-4" /> Encomendas
-          {pendingCount > 0 && <span className="bg-red-500 text-white text-xs rounded-full px-1.5">{pendingCount}</span>}
+          {pendingCount > 0 && <span className="bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">{pendingCount}</span>}
         </button>
       </div>
 
@@ -464,7 +501,7 @@ export default function POS() {
         <div className="p-4 border-t space-y-4">
           <div>
             <label className="text-sm font-medium block mb-2">Pagamento</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className={`grid grid-cols-3 gap-2 ${isCredit ? 'opacity-40 pointer-events-none' : ''}`}>
               {(['multicaixa', 'express', 'dinheiro'] as PaymentType[]).map(p => (
                 <button
                   key={p}
@@ -475,7 +512,7 @@ export default function POS() {
                 </button>
               ))}
             </div>
-            {paymentType === 'multicaixa' && bankAccounts.length > 0 && (
+            {!isCredit && paymentType === 'multicaixa' && bankAccounts.length > 0 && (
               <div className="mt-2">
                 <label className="text-xs text-gray-500 font-medium block mb-1">Banco de destino</label>
                 <select
@@ -487,6 +524,25 @@ export default function POS() {
                     <option key={b.id} value={b.name}>{b.name}</option>
                   ))}
                 </select>
+              </div>
+            )}
+
+            <button
+              onClick={() => setIsCredit(v => !v)}
+              className={`mt-2 w-full p-2 rounded-lg text-sm font-medium border-2 border-dashed ${isCredit ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 text-amber-700 border-amber-300'}`}
+            >
+              🧾 Fiado (pagar depois)
+            </button>
+            {isCredit && (
+              <div className="mt-2">
+                <label className="text-xs text-gray-500 font-medium block mb-1">Nome do cliente</label>
+                <input
+                  value={creditCustomerName}
+                  onChange={e => setCreditCustomerName(e.target.value)}
+                  placeholder="Quem fica a dever..."
+                  className="w-full border border-amber-300 bg-amber-50 p-2 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
+                />
+                <p className="text-xs text-amber-700 mt-1">Vai para Contas a Receber — sem entrada em Caixa até ser liquidada.</p>
               </div>
             )}
           </div>
@@ -524,9 +580,9 @@ export default function POS() {
           <button
             onClick={handleCheckout}
             disabled={cart.length === 0}
-            className="w-full bg-gradient-to-r from-green-600 to-emerald-600 text-white py-3 rounded-lg font-bold hover:from-green-700 hover:to-emerald-700 transition disabled:opacity-50"
+            className={`w-full text-white py-3 rounded-lg font-bold transition disabled:opacity-50 ${isCredit ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700' : 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700'}`}
           >
-            FINALIZAR VENDA
+            {isCredit ? 'FINALIZAR VENDA (FIADO)' : 'FINALIZAR VENDA'}
           </button>
         </div>
       </div>

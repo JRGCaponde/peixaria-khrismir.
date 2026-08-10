@@ -4,14 +4,16 @@
  * ou quando é super_admin.
  */
 
-import { useState, useEffect } from 'react'
-import { Store, LogOut, ChevronRight, Search, MapPin, Phone } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { Store, LogOut, ChevronRight, Search, MapPin, Phone, Plus, X } from 'lucide-react'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useStore, type StoreInfo } from '../lib/storeContext'
 import { useAuthStore } from '../stores/useAuthStore'
-import { pullAll } from '../lib/sync'
+import { pullAll, syncStore } from '../lib/sync'
 import { startRealtime } from '../lib/realtime'
 import { toast } from 'sonner'
+
+const emptyForm = () => ({ name: '', address: '', phone: '', email: '', whatsapp: '', nif: '', iva_rate: '14' })
 
 export default function StorePicker() {
   const { setStore } = useStore()
@@ -20,6 +22,9 @@ export default function StorePicker() {
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [form, setForm] = useState(emptyForm())
 
   useEffect(() => {
     loadStores()
@@ -46,16 +51,41 @@ export default function StorePicker() {
   async function selectStore(store: StoreInfo) {
     setSelecting(store.id)
     try {
-      // Guarda loja no contexto e localStorage
+      // 1. Guarda loja → App.tsx navega imediatamente para Admin
       setStore(store)
-      // Sincroniza dados desta loja
-      await pullAll()
       startRealtime()
       toast.success(`✅ Loja "${store.name}" seleccionada`)
-    } catch {
-      toast.error('Erro ao carregar dados da loja')
+      // 2. Sync em background — Admin tem o seu próprio pullAll() no mount
+      pullAll().catch(() => {/* silencioso — Admin sincroniza novamente */})
+    } catch (e: any) {
+      console.error('[StorePicker] selectStore error:', e)
+      toast.error('Erro ao seleccionar loja: ' + (e?.message ?? 'desconhecido'))
     } finally {
       setSelecting(null)
+    }
+  }
+
+  async function createStore() {
+    if (!form.name.trim()) { toast.error('Nome da loja é obrigatório'); return }
+    setCreating(true)
+    try {
+      const result = await syncStore({
+        name: form.name.trim(),
+        address: form.address.trim() || undefined,
+        phone: form.phone.trim() || undefined,
+        email: form.email.trim() || undefined,
+        whatsapp: form.whatsapp.trim() || undefined,
+        nif: form.nif.trim() || undefined,
+        iva_rate: form.iva_rate ? Number(form.iva_rate) : 14,
+        active: true,
+      })
+      if (!result) { toast.error('Erro ao criar loja. Verifique a ligação ao Supabase.'); return }
+      toast.success(`Loja "${form.name}" criada com sucesso!`)
+      setShowCreate(false)
+      setForm(emptyForm())
+      await loadStores()
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -77,6 +107,12 @@ export default function StorePicker() {
           <p className="text-gray-500 text-sm mt-1">
             Olá, <span className="font-medium">{user?.full_name || user?.email}</span>. Escolha a loja para continuar.
           </p>
+          <button
+            onClick={() => { setForm(emptyForm()); setShowCreate(true) }}
+            className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 text-white text-sm font-semibold rounded-xl hover:bg-cyan-700 transition shadow"
+          >
+            <Plus className="w-4 h-4" /> Nova Loja
+          </button>
         </div>
 
         {/* Search */}
@@ -158,6 +194,70 @@ export default function StorePicker() {
           <LogOut className="w-4 h-4" /> Terminar sessão
         </button>
       </div>
+
+      {/* Modal — Criar Loja */}
+      {showCreate && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between p-5 border-b">
+              <h2 className="text-lg font-bold text-gray-800">Nova Loja</h2>
+              <button onClick={() => setShowCreate(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <Field label="Nome da loja *">
+                <input className={inp} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} placeholder="Ex: Peixaria Khrismir" autoFocus />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="NIF">
+                  <input className={inp} value={form.nif} onChange={e => setForm({ ...form, nif: e.target.value })} placeholder="500XXXXXXX" />
+                </Field>
+                <Field label="IVA (%)">
+                  <input className={inp} type="number" min="0" max="100" value={form.iva_rate} onChange={e => setForm({ ...form, iva_rate: e.target.value })} />
+                </Field>
+              </div>
+              <Field label="Morada">
+                <input className={inp} value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} placeholder="Rua, cidade, provincia" />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Telefone">
+                  <input className={inp} type="tel" value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="+244 9XX XXX XXX" />
+                </Field>
+                <Field label="WhatsApp">
+                  <input className={inp} type="tel" value={form.whatsapp} onChange={e => setForm({ ...form, whatsapp: e.target.value })} placeholder="+244 9XX XXX XXX" />
+                </Field>
+              </div>
+              <Field label="Email">
+                <input className={inp} type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="loja@exemplo.ao" />
+              </Field>
+              <div className="flex gap-2 pt-2">
+                <button onClick={() => setShowCreate(false)} className="flex-1 py-2.5 border border-gray-200 rounded-xl text-sm hover:bg-gray-50 transition">
+                  Cancelar
+                </button>
+                <button
+                  onClick={createStore}
+                  disabled={creating}
+                  className="flex-1 py-2.5 bg-cyan-600 text-white rounded-xl text-sm font-semibold hover:bg-cyan-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {creating ? <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> A criar...</> : <><Plus className="w-4 h-4" /> Criar Loja</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const inp = 'w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-300'
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+      {children}
     </div>
   )
 }

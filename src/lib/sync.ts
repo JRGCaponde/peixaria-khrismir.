@@ -22,6 +22,7 @@ const STORE_BUSINESS_KEYS = [
   'khrismir_delivery_zones', 'khrismir_promos', 'khrismir_returns',
   'khrismir_loyalty', 'khrismir_shifts', 'khrismir_settings',
   'cf_movements', 'cf_accounts', 'cf_categories', 'cf_deleted_ids',
+  'khrismir_accounts', 'khrismir_journal', 'khrismir_map_references',
   'khrismir_auto_synced',
 ]
 const LAST_PULL_STORE_KEY = 'khrismir_last_pull_store'
@@ -51,7 +52,7 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     const [cat, prod, ord, cf, pur, zones, promos, sets, sup, ret, loy, shifts, profiles] = await Promise.all([
       sf(supabase.from('categories').select('*').order('name')),
       sf(supabase.from('products').select('*').order('name')),
-      sf(supabase.from('orders').select('*, order_items(*)').order('created_at', { ascending: false })),
+      sf(supabase.from('orders').select('*, order_items(*)').order('created_at', { ascending: false }).limit(100)),
       sf(supabase.from('cash_flow').select('*').order('created_at', { ascending: false })),
       sf(supabase.from('purchases').select('*').order('created_at', { ascending: false })),
       sf(supabase.from('delivery_zones').select('*').order('name')),
@@ -64,16 +65,22 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       sf(supabase.from('loyalty_transactions').select('*').order('created_at', { ascending: false })),
       sf(supabase.from('shift_sessions').select('*').order('opened_at', { ascending: false })),
       sid
-        ? supabase.from('profiles').select('*').eq('role', 'client').eq('store_id', sid).order('created_at', { ascending: false })
-        : supabase.from('profiles').select('*').eq('role', 'client').order('created_at', { ascending: false }),
+        ? supabase.from('profiles').select('*').eq('store_id', sid).order('created_at', { ascending: false })
+        : supabase.from('profiles').select('*').order('created_at', { ascending: false }),
     ])
 
-    // Fluxo de caixa (novo sistema) — pull paralelo
-    const [cfAccounts, cfCategories, cfMovements, storesData] = await Promise.all([
+    // Fluxo de caixa (novo sistema) + clientes PRIMAVERA — pull paralelo
+    const [cfAccounts, cfCategories, cfMovements, storesData, primClients, accAccounts, journal, mapRefs] = await Promise.all([
       sf(supabase.from('cf_accounts').select('*').order('name')),
       sf(supabase.from('cf_categories').select('*').order('name')),
-      sf(supabase.from('cf_movements').select('*').order('created_at', { ascending: false })),
+      sf(supabase.from('cf_movements').select('*').order('created_at', { ascending: false }).limit(300)),
       supabase.from('stores').select('*').eq('active', true).order('name'),
+      sid
+        ? supabase.from('clients').select('*').eq('store_id', sid).order('full_name')
+        : supabase.from('clients').select('*').order('full_name'),
+      sf(supabase.from('accounting_accounts').select('*').order('code')),
+      sf(supabase.from('journal_entries').select('*').order('created_at', { ascending: false }).limit(500)),
+      sf(supabase.from('map_references').select('*').order('name')),
     ])
 
     // SEMPRE escreve no localStorage — mesmo arrays vazios limpam dados da loja anterior.
@@ -83,19 +90,37 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     if (cfCategories.data) lsSet('cf_categories', cfCategories.data)
 
     // cf_movements — merge local + Supabase (preserva movimentos locais não sincronizados)
+    // Limitado a 300 registos para não encher o localStorage (~300 KB)
     if (cfMovements.data) {
       const fromSb = cfMovements.data.map((m: any) => ({ ...m, accountTo: m.account_to }))
       const localMvs: any[] = (() => { try { return JSON.parse(localStorage.getItem('cf_movements') || '[]') } catch { return [] } })()
       const sbIds = new Set(fromSb.map((m: any) => m.id))
       // Preserva movimentos locais que ainda não chegaram ao Supabase (ex: vendas POS recentes)
       const localOnly = localMvs.filter((m: any) => m.id && !sbIds.has(m.id))
-      const merged = [...localOnly, ...fromSb].sort((a: any, b: any) =>
-        new Date(b.created_at || b.date).getTime() - new Date(a.created_at || a.date).getTime()
-      )
+      const merged = [...localOnly, ...fromSb]
+        .sort((a: any, b: any) =>
+          new Date(b.created_at || b.date).getTime() - new Date(a.created_at || a.date).getTime()
+        )
+        .slice(0, 300)  // máx 300 movimentos em cache local (~300 KB)
       lsSet('cf_movements', merged)
     }
 
     if (storesData.data)   lsSet('khrismir_stores', storesData.data)
+
+    if (accAccounts.data && accAccounts.data.length > 0) lsSet('khrismir_accounts', accAccounts.data)
+    if (mapRefs.data) lsSet('khrismir_map_references', mapRefs.data)
+
+    // Lançamentos contabilísticos — merge local + Supabase (preserva lançamentos locais não sincronizados)
+    if (journal.data) {
+      const fromSb = journal.data
+      const localEntries: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_journal') || '[]') } catch { return [] } })()
+      const sbIds = new Set(fromSb.map((e: any) => e.id))
+      const localOnly = localEntries.filter((e: any) => e.id && !sbIds.has(e.id))
+      const merged = [...localOnly, ...fromSb]
+        .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, 500)
+      lsSet('khrismir_journal', merged)
+    }
 
     if (cat.data)    lsSet('khrismir_categories', cat.data)
     if (prod.data)   lsSet('khrismir_products', prod.data)
@@ -120,20 +145,35 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     }
     if (cf.data)     lsSet('khrismir_cashflow', cf.data)
 
-    // Purchases — merge local + Supabase (preserva locais que ainda não chegaram à cloud)
+    // Purchases — merge local + Supabase, filtrando entradas com total_price <= 0
     if (pur.data) {
+      const validSb = pur.data.filter((p: any) => Number(p.total_price) > 0 && p.product_id)
       const localPur: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_purchases') || '[]') } catch { return [] } })()
-      const sbPurIds = new Set(pur.data.map((p: any) => p.id))
-      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id))
-      lsSet('khrismir_purchases', [...localOnlyPur, ...pur.data])
+      const sbPurIds = new Set(validSb.map((p: any) => p.id))
+      // Só preserva locais válidos (mesmo filtro: total_price > 0 e product_id existe)
+      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id) && Number(p.total_price) > 0 && p.product_id)
+      lsSet('khrismir_purchases', [...localOnlyPur, ...validSb])
     }
 
     if (zones.data)  lsSet('khrismir_delivery_zones', zones.data)
     if (promos.data) lsSet('khrismir_promos', promos.data)
     if (sets.data)   lsSet('khrismir_settings', sets.data)
     if (sup.data)    lsSet('khrismir_suppliers', sup.data)
-    if (ret.data)    lsSet('khrismir_returns', ret.data)
-    if (loy.data)    lsSet('khrismir_loyalty', loy.data)
+
+    // Devoluções e fidelização — merge local + Supabase (preserva registos locais
+    // ainda não sincronizados, em vez de os apagar com uma substituição directa)
+    if (ret.data) {
+      const localRet: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_returns') || '[]') } catch { return [] } })()
+      const sbRetIds = new Set(ret.data.map((r: any) => r.id))
+      const localOnlyRet = localRet.filter((r: any) => r.id && !sbRetIds.has(r.id))
+      lsSet('khrismir_returns', [...localOnlyRet, ...ret.data])
+    }
+    if (loy.data) {
+      const localLoy: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_loyalty') || '[]') } catch { return [] } })()
+      const sbLoyIds = new Set(loy.data.map((l: any) => l.id))
+      const localOnlyLoy = localLoy.filter((l: any) => l.id && !sbLoyIds.has(l.id))
+      lsSet('khrismir_loyalty', [...localOnlyLoy, ...loy.data])
+    }
 
     // Shifts — merge local + Supabase (preserva turnos locais que ainda não chegaram à cloud)
     if (shifts.data) {
@@ -143,15 +183,42 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       lsSet('khrismir_shifts', [...localOnlyShifts, ...shifts.data])
     }
     if (profiles.data && profiles.data.length > 0) {
-      // Merge com clientes locais (sem sobrescrever contas de funcionários)
+      // Traz TODOS os perfis (clientes, funcionários, gerentes, admins) — antes só
+      // trazia clientes, por isso a Equipa aparecia vazia em qualquer dispositivo
+      // que não fosse o que criou a conta.
+      // A tabela profiles não guarda a password (fica só em auth.users) — preserva
+      // a password local já existente em vez de a apagar ao fazer merge.
       const local: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_clients') || '[]') } catch { return [] } })()
+      const localById = new Map(local.map((c: any) => [c.id, c]))
+      const merged = profiles.data.map((p: any) => ({ ...p, password: localById.get(p.id)?.password }))
       const supabaseIds = new Set(profiles.data.map((p: any) => p.id))
       const localOnly = local.filter((c: any) => !supabaseIds.has(c.id))
-      lsSet('khrismir_clients', [...localOnly, ...profiles.data])
+      const allClients = [...localOnly, ...merged]
+      lsSet('khrismir_clients', allClients)
+
+      // Espelha os não-clientes também em khrismir_employees (é o que a Equipa lê)
+      const employeeRoles = new Set(['employee', 'admin', 'gerente', 'super_admin'])
+      lsSet('khrismir_employees', allClients.filter((c: any) => employeeRoles.has(c.role)))
+    }
+
+    // Merge clientes PRIMAVERA (tabela clients) no khrismir_clients
+    if (primClients?.data && primClients.data.length > 0) {
+      const existing: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_clients') || '[]') } catch { return [] } })()
+      const existingIds = new Set(existing.map((c: any) => c.id))
+      // Adiciona clientes PRIMAVERA que ainda não estão (por id)
+      const novosPrim = primClients.data
+        .filter((c: any) => !existingIds.has(c.id))
+        .map((c: any) => ({ ...c, role: 'client', source: 'primavera' }))
+      if (novosPrim.length > 0) {
+        lsSet('khrismir_clients', [...existing, ...novosPrim])
+      }
     }
 
     // Notifica todos os componentes que os dados foram actualizados
     window.dispatchEvent(new CustomEvent('khrismir:sync', { detail: { table: 'pullAll' } }))
+
+    // Regista timestamp da última sincronização bem-sucedida
+    localStorage.setItem('khrismir_last_sync', new Date().toISOString())
 
     return { ok: true }
   } catch (e: any) {
@@ -187,6 +254,9 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
   const returns_:    any[]                 = ls('khrismir_returns', [])
   const loyalty:     any[]                 = ls('khrismir_loyalty', [])
   const shifts:      any[]                 = ls('khrismir_shifts', [])
+  const accAccounts: any[]                 = ls('khrismir_accounts', [])
+  const journal:     any[]                 = ls('khrismir_journal', [])
+  const mapRefs:     any[]                 = ls('khrismir_map_references', [])
 
   const sid = getCurrentStoreId()
 
@@ -266,6 +336,11 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
         delivery_address: o.delivery_address ?? '', discount_code: o.discount_code ?? '',
         discount_amount: o.discount_amount ?? 0, subtotal: o.subtotal ?? o.total ?? 0,
         total: o.total ?? 0, notes: o.notes ?? '',
+        delivery_lat: o.delivery_lat ?? null, delivery_lng: o.delivery_lng ?? null,
+        delivery_distance_km: o.delivery_distance_km ?? null,
+        doc_type: o.doc_type ?? null, converted_to_order_id: o.converted_to_order_id ?? null,
+        converted_from_order_id: o.converted_from_order_id ?? null,
+        payment_status: o.payment_status ?? 'pago', paid_at: o.paid_at ?? null,
         created_at: o.created_at, updated_at: o.updated_at,
         store_id: sid,
       }))
@@ -305,11 +380,14 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     created_at: c.created_at, store_id: sid,
   })), 'Fluxo de Caixa')
 
-  await upsert('purchases', purchases.map(p => ({
+  // Filtra compras inválidas (formato antigo ou total_price <= 0) antes de enviar ao Supabase
+  const validPurchases = purchases.filter(p => Number((p as any).total_price) > 0 && (p as any).product_id)
+  await upsert('purchases', validPurchases.map(p => ({
     id: (p as any).id, product_id: (p as any).product_id ?? '',
     product_name: (p as any).product_name ?? '', quantity: (p as any).quantity ?? 0,
     unit_price: (p as any).unit_price ?? 0, total_price: (p as any).total_price ?? 0,
     supplier: (p as any).supplier ?? '', created_at: (p as any).created_at,
+    payment_status: (p as any).payment_status ?? 'pago', paid_at: (p as any).paid_at ?? null,
     store_id: sid,
   })), 'Compras')
 
@@ -348,9 +426,26 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     id: s.id, opened_at: s.opened_at, closed_at: s.closed_at ?? null,
     opening_balance: s.opening_balance ?? 0, closing_balance: s.closing_balance ?? null,
     cash_counted: s.cash_counted ?? null, difference: s.difference ?? null,
-    opened_by: s.opened_by ?? '', closed_by: s.closed_by ?? null, notes: s.notes ?? '',
+    opened_by: s.opened_by ?? '', opened_by_id: s.opened_by_id ?? null,
+    closed_by: s.closed_by ?? null, notes: s.notes ?? '',
     store_id: sid,
   })), 'Turnos')
+
+  await upsert('accounting_accounts', accAccounts.map(a => ({
+    id: a.id, code: a.code, name: a.name, class: a.class,
+    nature: a.nature, editable: a.editable ?? true, store_id: sid,
+  })), 'Contas Contabilísticas')
+
+  await upsert('journal_entries', journal.map(e => ({
+    id: e.id, date: e.date, description: e.description ?? '',
+    reference: e.reference ?? null, source: e.source ?? 'manual',
+    lines: e.lines ?? [], created_at: e.created_at ?? new Date().toISOString(),
+    store_id: sid,
+  })), 'Lançamentos Contabilísticos')
+
+  await upsert('map_references', mapRefs.map(p => ({
+    id: p.id, name: p.name, lat: p.lat, lng: p.lng, store_id: sid,
+  })), 'Pontos de Referência')
 
   if (Object.keys(settings).length) {
     const { error } = await supabase!.from('store_settings').upsert(
@@ -365,17 +460,20 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
 
 // ── ESCRITAS INCREMENTAIS ─────────────────────────────────────
 
-export async function syncProducts(products: Product[]) {
-  if (!isSupabaseReady() || !supabase) return
+export async function syncProducts(products: Product[]): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
-  supabase.from('products').upsert(products.map(p => ({
+  const { error } = await supabase.from('products').upsert(products.map(p => ({
     id: p.id, name: p.name, price: p.price, cost_price: p.cost_price ?? 0,
     unit: p.unit, stock_quantity: p.stock_quantity, min_stock: p.min_stock,
     allow_whole: p.allow_whole, allow_clean: p.allow_clean,
     allow_fillet: p.allow_fillet, allow_steak: p.allow_steak,
-    category_id: p.category_id, image_url: p.image_url ?? '',
+    // category_id NULL (não '') — string vazia viola a FK para categories(id)
+    category_id: p.category_id || null, image_url: p.image_url ?? '',
     expiry_date: p.expiry_date ?? null, store_id: sid,
-  })), { onConflict: 'id' }).then()
+  })), { onConflict: 'id' })
+  if (error) { console.error('[syncProducts]', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
 }
 
 /**
@@ -415,10 +513,11 @@ export async function syncProductStock(productId: string, quantity: number): Pro
 export async function syncCategories(categories: Category[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
-  supabase.from('categories').upsert(categories.map(c => ({
+  const { error } = await supabase.from('categories').upsert(categories.map(c => ({
     id: c.id, name: c.name, description: c.description ?? '', image_url: c.image_url ?? '',
     store_id: sid,
-  })), { onConflict: 'id' }).then()
+  })), { onConflict: 'id' })
+  if (error) console.error('[syncCategories]', error.message)
 }
 
 export async function syncOrder(order: Order): Promise<boolean> {
@@ -436,6 +535,10 @@ export async function syncOrder(order: Order): Promise<boolean> {
     delivery_address: o.delivery_address ?? '', discount_code: o.discount_code ?? '',
     discount_amount: o.discount_amount ?? 0, subtotal: o.subtotal ?? o.total ?? 0,
     total: o.total ?? 0, notes: o.notes ?? '',
+    delivery_lat: o.delivery_lat ?? null, delivery_lng: o.delivery_lng ?? null,
+    delivery_distance_km: o.delivery_distance_km ?? null,
+    doc_type: o.doc_type ?? null, converted_to_order_id: o.converted_to_order_id ?? null,
+    converted_from_order_id: o.converted_from_order_id ?? null,
     created_at: o.created_at, updated_at: o.updated_at,
     store_id: getCurrentStoreId(),
   }
@@ -460,22 +563,29 @@ export async function syncOrder(order: Order): Promise<boolean> {
 
 export async function syncOrderStatus(id: string, status: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('orders').update({ status, updated_at: new Date().toISOString() }).eq('id', id).then()
+  const { error } = await supabase.from('orders').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
+  if (error) console.error('[syncOrderStatus]', error.message)
 }
 
 export async function syncCashFlow(entries: CashFlow[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
-  supabase.from('cash_flow').upsert(entries.map(e => ({ ...e, store_id: sid })), { onConflict: 'id' }).then()
+  const { error } = await supabase.from('cash_flow').upsert(entries.map(e => ({ ...e, store_id: sid })), { onConflict: 'id' })
+  if (error) console.error('[syncCashFlow]', error.message)
 }
 
 export async function syncPurchases(purchases: any[]) {
   if (!isSupabaseReady() || !supabase || !purchases.length) return
+  // Nunca enviar compras com total_price <= 0 (formato antigo ou dados inválidos)
+  const valid = purchases.filter(p => Number(p.total_price) > 0 && p.product_id)
+  if (!valid.length) return
   const sid = getCurrentStoreId()
-  const { error } = await supabase.from('purchases').upsert(purchases.map(p => ({
+  const { error } = await supabase.from('purchases').upsert(valid.map(p => ({
     id: p.id, product_id: p.product_id ?? '', product_name: p.product_name ?? '',
     quantity: p.quantity ?? 0, unit_price: p.unit_price ?? 0, total_price: p.total_price ?? 0,
-    supplier: p.supplier ?? '', created_at: p.created_at, store_id: sid,
+    supplier: p.supplier ?? '', created_at: p.created_at,
+    payment_status: p.payment_status ?? 'pago', paid_at: p.paid_at ?? null,
+    store_id: sid,
   })), { onConflict: 'id' })
   if (error) console.error('[syncPurchases]', error.message)
 }
@@ -485,10 +595,11 @@ export async function syncSettings(settings: StoreSettings) {
   const sid = getCurrentStoreId()
   // id baseado no store_id para permitir multi-loja (uuid ou fallback '1')
   const rowId = sid ?? '1'
-  supabase.from('store_settings').upsert(
+  const { error } = await supabase.from('store_settings').upsert(
     { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid },
     { onConflict: 'store_id' }
-  ).then()
+  )
+  if (error) console.error('[syncSettings]', error.message)
 }
 
 // ── LOJAS ─────────────────────────────────────────────────
@@ -516,9 +627,22 @@ export async function syncStore(store: {
   return data
 }
 
-export async function deleteStore(id: string) {
+// ── PONTOS DE REFERÊNCIA DO MAPA (entrega por distância) ───────
+
+export async function syncMapReferences(points: any[]) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('stores').update({ active: false }).eq('id', id).then()
+  const sid = getCurrentStoreId()
+  const { error } = await supabase.from('map_references').upsert(
+    points.map(p => ({ id: p.id, name: p.name, lat: p.lat, lng: p.lng, store_id: sid })),
+    { onConflict: 'id' }
+  )
+  if (error) console.error('[syncMapReferences]', error.message)
+}
+
+export async function deleteMapReference(id: string) {
+  if (!isSupabaseReady() || !supabase) return
+  const { error } = await supabase.from('map_references').delete().eq('id', id)
+  if (error) console.error('[deleteMapReference]', error.message)
 }
 
 /**
@@ -535,31 +659,30 @@ export async function deleteStorePermanent(id: string): Promise<{ ok: boolean; e
 export async function syncDeliveryZones(zones: DeliveryZone[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
-  supabase.from('delivery_zones').upsert(zones.map(z => ({ ...z, store_id: sid })), { onConflict: 'id' }).then()
+  const { error } = await supabase.from('delivery_zones').upsert(zones.map(z => ({ ...z, store_id: sid })), { onConflict: 'id' })
+  if (error) console.error('[syncDeliveryZones]', error.message)
 }
 
-export async function syncPromos(promos: PromoCode[]) {
-  if (!isSupabaseReady() || !supabase) return
+export async function syncPromos(promos: PromoCode[]): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
-  supabase.from('promo_codes').upsert(promos.map(p => ({ ...p, store_id: sid })), { onConflict: 'id' }).then()
+  const { error } = await supabase.from('promo_codes').upsert(promos.map(p => ({ ...p, store_id: sid })), { onConflict: 'id' })
+  if (error) { console.error('[syncPromos]', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
 }
 
-export async function syncSuppliers(suppliers: any[]) {
-  if (!isSupabaseReady() || !supabase) return
+export async function syncSuppliers(suppliers: any[]): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
-  supabase.from('suppliers').upsert(suppliers.map(s => ({ ...s, store_id: sid })), { onConflict: 'id' }).then()
+  const { error } = await supabase.from('suppliers').upsert(suppliers.map(s => ({ ...s, store_id: sid })), { onConflict: 'id' })
+  if (error) { console.error('[syncSuppliers]', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
 }
 
-export async function syncReturns(returns_: any[]) {
+export async function deleteSupplier(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  const sid = getCurrentStoreId()
-  supabase.from('returns').upsert(returns_.map(r => ({ ...r, store_id: sid })), { onConflict: 'id' }).then()
-}
-
-export async function syncLoyalty(transactions: any[]) {
-  if (!isSupabaseReady() || !supabase) return
-  const sid = getCurrentStoreId()
-  supabase.from('loyalty_transactions').upsert(transactions.map(l => ({ ...l, store_id: sid })), { onConflict: 'id' }).then()
+  const { error } = await supabase.from('suppliers').delete().eq('id', id)
+  if (error) console.error('[deleteSupplier]', error.message)
 }
 
 export async function syncShifts(shifts: any[]) {
@@ -569,7 +692,8 @@ export async function syncShifts(shifts: any[]) {
     id: s.id, opened_at: s.opened_at, closed_at: s.closed_at ?? null,
     opening_balance: s.opening_balance ?? 0, closing_balance: s.closing_balance ?? null,
     cash_counted: s.cash_counted ?? null, difference: s.difference ?? null,
-    opened_by: s.opened_by ?? '', closed_by: s.closed_by ?? null, notes: s.notes ?? '',
+    opened_by: s.opened_by ?? '', opened_by_id: s.opened_by_id ?? null,
+    closed_by: s.closed_by ?? null, notes: s.notes ?? '',
     store_id: sid,
   })), { onConflict: 'id' })
   if (error) console.error('[syncShifts]', error.message)
@@ -580,33 +704,35 @@ export async function syncShifts(shifts: any[]) {
 export async function syncCfAccounts(accounts: any[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
-  supabase.from('cf_accounts').upsert(
+  const { error } = await supabase.from('cf_accounts').upsert(
     accounts.map(a => ({
       id: a.id, name: a.name, balance: a.balance ?? 0,
       type: a.type ?? 'cash', color: a.color ?? '#06b6d4',
       store_id: sid, updated_at: new Date().toISOString(),
     })),
     { onConflict: 'id' }
-  ).then()
+  )
+  if (error) console.error('[syncCfAccounts]', error.message)
 }
 
 export async function syncCfCategories(categories: any[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
-  supabase.from('cf_categories').upsert(
+  const { error } = await supabase.from('cf_categories').upsert(
     categories.map(c => ({
       id: c.id, name: c.name, type: c.type ?? 'expense',
       color: c.color ?? '#6b7280',
       store_id: sid, updated_at: new Date().toISOString(),
     })),
     { onConflict: 'id' }
-  ).then()
+  )
+  if (error) console.error('[syncCfCategories]', error.message)
 }
 
 export async function syncCfMovements(movements: any[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
-  supabase.from('cf_movements').upsert(
+  const { error } = await supabase.from('cf_movements').upsert(
     movements.map(m => ({
       id: m.id, date: m.date, type: m.type,
       description: m.description ?? '', amount: m.amount ?? 0,
@@ -616,42 +742,116 @@ export async function syncCfMovements(movements: any[]) {
       store_id: sid,
     })),
     { onConflict: 'id' }
-  ).then()
+  )
+  if (error) console.error('[syncCfMovements]', error.message)
 }
 
 export async function deleteCfMovement(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('cf_movements').delete().eq('id', id).then()
+  const { error } = await supabase.from('cf_movements').delete().eq('id', id)
+  if (error) console.error('[deleteCfMovement]', error.message)
 }
 
 export async function deleteCfAccount(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('cf_accounts').delete().eq('id', id).then()
+  const { error } = await supabase.from('cf_accounts').delete().eq('id', id)
+  if (error) console.error('[deleteCfAccount]', error.message)
 }
 
 export async function deleteCfCategory(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('cf_categories').delete().eq('id', id).then()
+  const { error } = await supabase.from('cf_categories').delete().eq('id', id)
+  if (error) console.error('[deleteCfCategory]', error.message)
+}
+
+export async function deleteJournalEntry(id: string) {
+  if (!isSupabaseReady() || !supabase) return
+  const { error } = await supabase.from('journal_entries').delete().eq('id', id)
+  if (error) console.error('[deleteJournalEntry]', error.message)
+}
+
+// ── CONTABILIDADE (PGC-AO) ────────────────────────────────────
+
+export async function syncAccountingAccounts(accounts: any[]) {
+  if (!isSupabaseReady() || !supabase) return
+  const sid = getCurrentStoreId()
+  const { error } = await supabase.from('accounting_accounts').upsert(
+    accounts.map(a => ({
+      id: a.id, code: a.code, name: a.name, class: a.class,
+      nature: a.nature, editable: a.editable ?? true,
+      store_id: sid,
+    })),
+    { onConflict: 'id' }
+  )
+  if (error) console.error('[syncAccountingAccounts]', error.message)
+}
+
+export async function syncJournalEntries(entries: any[]) {
+  if (!isSupabaseReady() || !supabase || !entries.length) return
+  const sid = getCurrentStoreId()
+  const { error } = await supabase.from('journal_entries').upsert(
+    entries.map(e => ({
+      id: e.id, date: e.date, description: e.description ?? '',
+      reference: e.reference ?? null, source: e.source ?? 'manual',
+      lines: e.lines ?? [], created_at: e.created_at ?? new Date().toISOString(),
+      store_id: sid,
+    })),
+    { onConflict: 'id' }
+  )
+  if (error) console.error('[syncJournalEntries]', error.message)
 }
 
 export async function deleteProduct(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('products').delete().eq('id', id).then()
+  const { error } = await supabase.from('products').delete().eq('id', id)
+  if (error) console.error('[deleteProduct]', error.message)
 }
 
 export async function deleteCategory(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('categories').delete().eq('id', id).then()
+  const { error } = await supabase.from('categories').delete().eq('id', id)
+  if (error) console.error('[deleteCategory]', error.message)
 }
 
 export async function deleteZone(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('delivery_zones').delete().eq('id', id).then()
+  const { error } = await supabase.from('delivery_zones').delete().eq('id', id)
+  if (error) console.error('[deleteZone]', error.message)
 }
 
 export async function deletePromo(id: string) {
   if (!isSupabaseReady() || !supabase) return
-  supabase.from('promo_codes').delete().eq('id', id).then()
+  const { error } = await supabase.from('promo_codes').delete().eq('id', id)
+  if (error) console.error('[deletePromo]', error.message)
+}
+
+// ── FIDELIZAÇÃO / DEVOLUÇÕES ──────────────────────────────────
+// Faltavam por completo — pontos ganhos/resgatados e devoluções eram só
+// gravados em localStorage e desapareciam na sincronização seguinte.
+
+export async function syncLoyalty(transactions: any[]): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseReady() || !supabase || !transactions.length) return { ok: false, error: 'Supabase não configurado' }
+  const sid = getCurrentStoreId()
+  const { error } = await supabase.from('loyalty_transactions').upsert(transactions.map(t => ({
+    id: t.id, client_id: t.client_id ?? '', client_name: t.client_name ?? '',
+    points: t.points ?? 0, type: t.type, order_id: t.order_id ?? '',
+    created_at: t.created_at, store_id: sid,
+  })), { onConflict: 'id' })
+  if (error) { console.error('[syncLoyalty]', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
+}
+
+export async function syncReturns(returns_: any[]): Promise<{ ok: boolean; error?: string }> {
+  if (!isSupabaseReady() || !supabase || !returns_.length) return { ok: false, error: 'Supabase não configurado' }
+  const sid = getCurrentStoreId()
+  const { error } = await supabase.from('returns').upsert(returns_.map(r => ({
+    id: r.id, order_id: r.order_id ?? '', order_number: r.order_number,
+    customer_name: r.customer_name ?? '', items: r.items ?? [],
+    total: r.total ?? 0, reason: r.reason ?? '', created_at: r.created_at,
+    store_id: sid,
+  })), { onConflict: 'id' })
+  if (error) { console.error('[syncReturns]', error.message); return { ok: false, error: error.message } }
+  return { ok: true }
 }
 
 /**
@@ -673,9 +873,13 @@ export async function clearAllData(): Promise<void> {
 
   // Fallback: delete directo (pode ser bloqueado por RLS mas tenta na mesma)
   const tables = [
-    'order_items', 'orders', 'products', 'categories',
+    'order_items', 'orders',
+    'sale_items', 'sales', 'stock_entries', 'clients',
+    'products', 'categories',
     'cash_flow', 'purchases', 'delivery_zones', 'promo_codes',
     'suppliers', 'returns', 'loyalty_transactions', 'shift_sessions',
+    'cf_movements', 'cf_accounts', 'cf_categories',
+    'profiles', 'stores',
   ]
   for (const table of tables) {
     try { await supabase.from(table).delete().not('id', 'is', null) } catch { }

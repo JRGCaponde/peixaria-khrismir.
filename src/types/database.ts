@@ -64,6 +64,7 @@ export interface ShiftSession {
   cash_counted?: number
   difference?: number
   opened_by: string
+  opened_by_id?: string
   closed_by?: string
   notes?: string
 }
@@ -118,6 +119,14 @@ export interface Order {
   delivery_zone?: string
   delivery_fee?: number
   delivery_address?: string
+  delivery_lat?: number
+  delivery_lng?: number
+  delivery_distance_km?: number
+  doc_type?: 'FA' | 'FP'
+  converted_to_order_id?: string
+  converted_from_order_id?: string
+  payment_status?: 'pago' | 'pendente'
+  paid_at?: string
   discount_code?: string
   discount_amount?: number
   subtotal?: number
@@ -127,6 +136,11 @@ export interface Order {
   created_at: string
   updated_at?: string
   hash?: string
+  // Faturação Eletrónica AGT — apenas local (tal como `hash`), sem sync Supabase
+  agt_status?: 'nao_aplicavel' | 'pendente' | 'enviado' | 'erro'
+  agt_submission_id?: string
+  agt_sent_at?: string
+  agt_error?: string
 }
 
 export interface DeliveryZone {
@@ -134,6 +148,13 @@ export interface DeliveryZone {
   name: string
   price: number
   description?: string
+}
+
+export interface MapReference {
+  id: string
+  name: string
+  lat: number
+  lng: number
 }
 
 export interface PromoCode {
@@ -180,6 +201,8 @@ export interface Purchase {
   total: number
   paymentType: string
   notes?: string
+  payment_status?: 'pago' | 'pendente'
+  paid_at?: string
 }
 
 export interface CashFlow {
@@ -190,4 +213,96 @@ export interface CashFlow {
   order_number?: string
   payment_type?: PaymentType
   created_at?: string
+}
+
+// ── Tipos PRIMAVERA ────────────────────────────────────────────────────────────
+
+export interface Client {
+  id: string
+  store_id: string
+  full_name: string
+  company_name?: string | null
+  tax_id?: string | null
+  phone?: string | null
+  email?: string | null
+  address?: string | null
+  primavera_code?: string | null
+  created_at?: string | null
+}
+
+export interface Sale {
+  id: string
+  primavera_id: string
+  store_id: string
+  doc_type: string
+  doc_number: number
+  doc_series?: string | null
+  sale_date: string
+  client_code?: string | null
+  client_name?: string | null
+  client_nif?: string | null
+  total?: number | null
+  total_net?: number | null
+  total_vat?: number | null
+  created_at?: string | null
+}
+
+export interface SaleItem {
+  id: string
+  primavera_id: string
+  sale_id: string
+  product_code?: string | null
+  description?: string | null
+  quantity?: number | null
+  unit_price?: number | null
+  total?: number | null
+  created_at?: string | null
+}
+
+export interface StockEntry {
+  id: string
+  primavera_id?: string | null
+  store_id: string
+  product_code: string
+  product_name?: string | null
+  quantity?: number | null
+  unit_cost?: number | null
+  total_cost?: number | null
+  doc_type?: string | null
+  doc_reference?: string | null
+  supplier_code?: string | null
+  supplier_name?: string | null
+  entry_date: string
+  created_at?: string | null
+}
+
+// ── Contabilidade (PGC-AO, partidas dobradas) ──────────────────────────────
+
+export interface AccountingAccount {
+  id: string
+  code: string                       // ex: "11", "71", "35"
+  name: string
+  class: number                      // 0-8 (classe PGC-AO)
+  nature: 'devedora' | 'credora'     // natureza do saldo normal da conta
+  editable: boolean                  // false para as contas semeadas por defeito
+  created_at?: string
+}
+
+export interface JournalLine {
+  account_code: string
+  debit: number
+  credit: number
+}
+
+export type JournalSource = 'manual' | 'auto_venda' | 'auto_compra' | 'auto_movimento'
+
+export interface JournalEntry {
+  id: string
+  date: string
+  description: string
+  reference?: string
+  source: JournalSource
+  lines: JournalLine[]
+  created_by?: string
+  created_at: string
 }

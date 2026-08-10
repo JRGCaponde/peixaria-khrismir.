@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '../stores/useAuthStore'
 import { Fish, Eye, EyeOff, Mail, ArrowLeft, KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
@@ -9,7 +9,9 @@ import { supabase, isSupabaseReady } from '../lib/supabase'
 type View = 'login' | 'register' | 'forgot' | 'reset'
 
 export default function Auth() {
-  const [view, setView] = useState<View>('login')
+  const [searchParams] = useSearchParams()
+  const initialView = searchParams.get('view')
+  const [view, setView] = useState<View>(initialView === 'register' ? 'register' : 'login')
   const [showPassword, setShowPassword] = useState(false)
   const [form, setForm] = useState({ email: '', password: '', name: '', phone: '', code: '', newPass: '', confirmPass: '' })
   const [lockedUntil, setLockedUntil] = useState<number | null>(null)

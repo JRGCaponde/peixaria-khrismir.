@@ -28,12 +28,6 @@ export default function Landing() {
             >
               Entrar como Cliente
             </Link>
-            <Link
-              to="/auth"
-              className="bg-cyan-800 hover:bg-cyan-900 text-white px-8 py-3 rounded-xl font-semibold text-lg transition border border-cyan-500"
-            >
-              Acesso Funcionário
-            </Link>
           </div>
         </div>
       </section>

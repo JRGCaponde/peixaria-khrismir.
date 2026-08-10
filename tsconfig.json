@@ -27,5 +27,10 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  "exclude": [
+    "src/pages/CashFlow/src/app",
+    "src/pages/CashFlow/src/db",
+    "src/pages/CashFlow/next.config.ts"
+  ]
 }

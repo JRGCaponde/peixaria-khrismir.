@@ -1,8 +1,8 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 import CryptoJS from 'crypto-js'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { startPresenceTracking, stopPresenceTracking } from '../lib/presence'
+import { getCurrentStoreId } from '../lib/storeContext'
 
 interface User {
   id: string
@@ -21,8 +21,14 @@ interface AuthState {
   logout: () => Promise<void>
   requestReset: (email: string) => string | null
   resetPassword: (email: string, newPassword: string, code: string) => boolean
-  initSupabaseSession: () => Promise<void>
   createUser: (email: string, password: string, fullName: string, phone: string, role: 'employee' | 'admin' | 'gerente' | 'client' | 'super_admin', access_areas?: string[]) => Promise<{ ok: boolean; supabaseId?: string; error?: string }>
+  /**
+   * Reconhece automaticamente um CLIENTE que já esteve logado neste dispositivo
+   * (sessão Supabase persistida, ou fallback local) — facilita o acesso a quem
+   * volta a usar a app depois de ler o QR code. Nunca restaura sessões de
+   * funcionário/admin — essas continuam sempre a pedir credenciais.
+   */
+  restoreClientSession: () => Promise<void>
 }
 
 // ── Bloqueio de tentativas (local) ─────────────────────────────
@@ -62,35 +68,13 @@ export function ensureDefaultUsers() {
 ensureDefaultUsers()
 
 // ── Store ──────────────────────────────────────────────────────
+// SEM persistência: o utilizador tem sempre de introduzir as credenciais
+// quando o app é aberto (arranque novo ou reload) — não há sessão
+// automática guardada entre aberturas.
 export const useAuthStore = create<AuthState>()(
-  persist(
     (set, _get) => ({
       user: null,
       isAuthenticated: false,
-
-      // Restaurar sessão Supabase ao abrir o app
-      initSupabaseSession: async () => {
-        if (!isSupabaseReady() || !supabase) return
-        const { data: { session } } = await supabase.auth.getSession()
-        if (!session) return
-        const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
-        if (profile) {
-          const u: User = { id: session.user.id, email: session.user.email!, full_name: profile.full_name, phone: profile.phone, role: profile.role, access_areas: profile.access_areas, created_at: profile.created_at }
-          set({ user: u, isAuthenticated: true })
-          startPresenceTracking(u)
-          // Auto-definir a loja activa a partir do perfil (resolve getCurrentStoreId() null)
-          if (profile.store_id) {
-            try {
-              const existing = JSON.parse(localStorage.getItem('khrismir_current_store') || 'null')
-              if (!existing || existing.id !== profile.store_id) {
-                const { data: storeData } = await supabase.from('stores').select('*').eq('id', profile.store_id).maybeSingle()
-                const storeObj = storeData ?? { id: profile.store_id, name: 'Loja Khrismir' }
-                localStorage.setItem('khrismir_current_store', JSON.stringify(storeObj))
-              }
-            } catch { /* non-fatal */ }
-          }
-        }
-      },
 
       login: async (email, password) => {
         const key = email.toLowerCase()
@@ -174,19 +158,56 @@ export const useAuthStore = create<AuthState>()(
         ensureDefaultUsers()
         const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
         const hashed = CryptoJS.SHA256(password).toString()
-        const found = clients.find((u: any) => u.email.toLowerCase() === key && u.password === hashed)
+        const found = clients.find((u: any) => (u.email ?? '').toLowerCase() === key && u.password === hashed)
         if (!found) { recordFail(); return { ok: false } }
         clearAttempts(email)
         const { password: _pw, ...safe } = found
         set({ user: safe as User, isAuthenticated: true })
         startPresenceTracking(safe as User)
+        // Guarda o id localmente para reconhecer automaticamente este cliente
+        // da próxima vez que abrir a app neste dispositivo (ver restoreClientSession).
+        if (safe.role === 'client') localStorage.setItem('khrismir_client_local_id', safe.id)
         return { ok: true }
       },
 
       logout: async () => {
         stopPresenceTracking()
         if (isSupabaseReady() && supabase) await supabase.auth.signOut()
+        localStorage.removeItem('khrismir_client_local_id')
         set({ user: null, isAuthenticated: false })
+      },
+
+      restoreClientSession: async () => {
+        if (isSupabaseReady() && supabase) {
+          try {
+            const { data: { session } } = await supabase.auth.getSession()
+            if (session) {
+              const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).maybeSingle()
+              if (profile?.role === 'client') {
+                const u: User = {
+                  id: session.user.id, email: session.user.email!, full_name: profile.full_name,
+                  phone: profile.phone, role: profile.role, created_at: profile.created_at,
+                }
+                set({ user: u, isAuthenticated: true })
+                startPresenceTracking(u)
+                return
+              }
+              if (profile) return // sessão válida mas não é cliente (staff) — nunca auto-reconhecer
+            }
+          } catch { /* não fatal — tenta o fallback local a seguir */ }
+        }
+        // Fallback local (sem Supabase configurado, ou sem sessão activa)
+        try {
+          const localId = localStorage.getItem('khrismir_client_local_id')
+          if (!localId) return
+          const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
+          const found = clients.find((c: any) => c.id === localId && c.role === 'client')
+          if (found) {
+            const { password: _pw, ...safe } = found
+            set({ user: safe as User, isAuthenticated: true })
+            startPresenceTracking(safe as User)
+          }
+        } catch { /* non-fatal */ }
       },
 
       requestReset: (email) => {
@@ -196,7 +217,7 @@ export const useAuthStore = create<AuthState>()(
           return '__supabase__'
         }
         const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
-        if (!clients.find((c: any) => c.email.toLowerCase() === email.toLowerCase())) return null
+        if (!clients.find((c: any) => (c.email ?? '').toLowerCase() === email.toLowerCase())) return null
         const code = Math.floor(100000 + Math.random() * 900000).toString()
         const resets: Record<string, { code: string; expires: number }> = JSON.parse(localStorage.getItem('khrismir_resets') || '{}')
         resets[email.toLowerCase()] = { code, expires: Date.now() + 30 * 60 * 1000 }
@@ -209,7 +230,7 @@ export const useAuthStore = create<AuthState>()(
         const entry = resets[email.toLowerCase()]
         if (!entry || entry.code !== code || Date.now() > entry.expires) return false
         const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
-        const idx = clients.findIndex((c: any) => c.email.toLowerCase() === email.toLowerCase())
+        const idx = clients.findIndex((c: any) => (c.email ?? '').toLowerCase() === email.toLowerCase())
         if (idx === -1) return false
         clients[idx].password = CryptoJS.SHA256(newPassword).toString()
         localStorage.setItem('khrismir_clients', JSON.stringify(clients))
@@ -221,6 +242,7 @@ export const useAuthStore = create<AuthState>()(
 
       createUser: async (email, password, fullName, phone, role, access_areas) => {
         let supabaseId: string | undefined
+        let cloudError: string | undefined
 
         // Tenta criar utilizador no Supabase Auth usando um cliente temporário
         // (cliente isolado para não afectar a sessão do admin actual)
@@ -232,25 +254,50 @@ export const useAuthStore = create<AuthState>()(
               import.meta.env.VITE_SUPABASE_ANON_KEY,
               { auth: { storage: { getItem: () => null, setItem: () => {}, removeItem: () => {} } as any } }
             )
-            const { data, error } = await tempClient.auth.signUp({
+            let { data, error } = await tempClient.auth.signUp({
               email,
               password,
               options: { data: { full_name: fullName, role } },
             })
+
+            // "Já registado" acontece tipicamente quando o perfil foi apagado
+            // (ex: um reset total) mas a conta de autenticação continua a existir.
+            // Tenta autenticar com a password fornecida para recuperar o id e
+            // reconstruir o perfil, em vez de falhar silenciosamente.
+            if (error && /already registered|already exists|user_already_exists/i.test(error.message)) {
+              const retry = await tempClient.auth.signInWithPassword({ email, password })
+              if (!retry.error && retry.data.user) {
+                data = retry.data as any
+                error = null
+              } else {
+                cloudError = 'Este email já está registado no Supabase com outra senha — use "Esqueceu a senha" para recuperar o acesso, ou escolha outro email.'
+              }
+            }
+
             if (!error && data.user) {
               supabaseId = data.user.id
-              await supabase.from('profiles').upsert({
+              const { error: profileErr } = await supabase.from('profiles').upsert({
                 id: data.user.id,
                 email,
                 full_name: fullName,
                 phone: phone || null,
                 role,
                 access_areas: access_areas ?? null,
+                store_id: getCurrentStoreId(),
                 created_at: new Date().toISOString(),
               }, { onConflict: 'id' })
+              if (profileErr) {
+                console.error('[createUser] profile upsert failed:', profileErr.message)
+                cloudError = `Conta criada mas o perfil falhou a gravar: ${profileErr.message}`
+                supabaseId = undefined // sem perfil, o login por Supabase recriaria como 'client' — não conta como sucesso na cloud
+              }
+            } else if (error && !cloudError) {
+              console.error('[createUser] signUp failed:', error.message)
+              cloudError = error.message
             }
           } catch (err: any) {
-            // non-fatal — continua com criação local
+            console.error('[createUser] exception:', err?.message)
+            cloudError = err?.message ?? 'Erro desconhecido ao contactar o Supabase'
           }
         }
 
@@ -273,18 +320,34 @@ export const useAuthStore = create<AuthState>()(
           const emps: any[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
           localStorage.setItem('khrismir_employees', JSON.stringify([...emps, newUser]))
         }
-        return { ok: true, supabaseId }
+        return { ok: true, supabaseId, error: cloudError }
       },
     }),
-    { name: 'khrismir_auth_storage' },
-  ),
 )
 
-// Ouvir alterações de sessão Supabase (ex: refresh de token)
+// Ouvir alterações de sessão Supabase (ex: fim de sessão real, token que falhou a renovar)
+//
+// IMPORTANTE: reage só ao evento SIGNED_OUT explícito. A condição anterior
+// `|| !session` fechava a sessão sempre que este evento disparava SEM sessão
+// Supabase — o que acontece sempre para contas locais (fallback, sem conta
+// Supabase Auth real, ex: os utilizadores admin/funcionário semeados por
+// omissão) e nalguns eventos internos do cliente (ex: INITIAL_SESSION de um
+// visitante anónimo). Resultado: a app "terminava a sessão sozinha" mesmo em
+// utilização activa, sem qualquer inactividade real.
 if (isSupabaseReady() && supabase) {
-  supabase.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_OUT' || !session) {
+  supabase.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT') {
       useAuthStore.setState({ user: null, isAuthenticated: false })
+    }
+  })
+
+  // Ao voltar a dar foco à aba (ex: telemóvel que suspendeu o browser em
+  // segundo plano), força uma verificação/renovação da sessão antes que o
+  // token expire silenciosamente sem o cliente ter tido oportunidade de o
+  // renovar automaticamente.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      supabase!.auth.getSession().catch(() => {})
     }
   })
 }

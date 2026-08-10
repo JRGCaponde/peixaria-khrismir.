@@ -30,6 +30,11 @@ const TABLE_MAP: Record<string, string> = {
   cf_movements:         'cf_movements',
   cf_accounts:          'cf_accounts',
   cf_categories:        'cf_categories',
+  // Contabilidade (PGC-AO)
+  accounting_accounts:  'khrismir_accounts',
+  journal_entries:      'khrismir_journal',
+  // Entrega por distância
+  map_references:       'khrismir_map_references',
   // Lojas & perfis
   stores:               'khrismir_stores',
   profiles:             'khrismir_profiles',
@@ -141,7 +146,6 @@ async function applyChange(table: string, event: string, newRow: any, oldRow: an
 }
 
 // ── Gestor do canal ────────────────────────────────────────────────────────
-let _channel: ReturnType<typeof supabase.channel> | null = null
 let _started = false
 
 /**
@@ -169,24 +173,14 @@ export function startRealtime(): void {
     )
   }
 
-  _channel = ch.subscribe((status: string) => {
+  ch.subscribe((status: string) => {
     console.log('[Realtime] Estado do canal:', status)
     if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
       console.warn('[Realtime] Canal perdido — a reconectar em 3s...')
       setTimeout(() => {
         _started = false
-        _channel = null
         startRealtime()
       }, 3000)
     }
   })
-}
-
-/** Para a subscrição (uso opcional, ex: logout) */
-export function stopRealtime(): void {
-  if (_channel && supabase) {
-    supabase.removeChannel(_channel)
-    _channel = null
-    _started = false
-  }
 }
