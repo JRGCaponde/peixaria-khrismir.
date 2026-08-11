@@ -91,7 +91,12 @@ export interface LoyaltyTransaction {
 }
 
 export type OrderStatus = 'pendente' | 'confirmado' | 'preparando' | 'pronto' | 'entregue' | 'cancelado'
-export type PaymentType = 'multicaixa' | 'express' | 'dinheiro'
+export type PaymentType = 'multicaixa' | 'express' | 'dinheiro' | 'misto'
+
+export interface PaymentSplitEntry {
+  method: 'multicaixa' | 'express' | 'dinheiro'
+  amount: number
+}
 export type DeliveryType = 'retirada' | 'delivery'
 export type PreparationType = 'inteiro' | 'limpo' | 'filé' | 'posta'
 
@@ -127,6 +132,7 @@ export interface Order {
   converted_from_order_id?: string
   payment_status?: 'pago' | 'pendente'
   paid_at?: string
+  payment_split?: PaymentSplitEntry[]
   discount_code?: string
   discount_amount?: number
   subtotal?: number

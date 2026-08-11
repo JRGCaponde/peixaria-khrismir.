@@ -136,6 +136,34 @@ export function postAutoEntryForSale(
 }
 
 /**
+ * Igual a postAutoEntryForSale, mas para uma venda paga em mais do que uma
+ * conta (ex: metade dinheiro, metade Multicaixa) — um débito por cada conta
+ * usada, em vez de um único débito pelo valor bruto todo.
+ */
+export function postAutoEntryForSplitSale(
+  orderId: string, orderNumber: string, splits: { cashAccountCode: string; amount: number }[], ivaRate: number, date: string,
+) {
+  const gross = round2(splits.reduce((s, x) => s + x.amount, 0))
+  const ivaPct = ivaRate / 100
+  const net = round2(gross / (1 + ivaPct))
+  const iva = round2(gross - net)
+
+  // Junta valores da mesma conta (ex: duas parcelas em dinheiro) numa só linha de débito
+  const byAccount = new Map<string, number>()
+  for (const s of splits) byAccount.set(s.cashAccountCode, round2((byAccount.get(s.cashAccountCode) ?? 0) + s.amount))
+  const debitLines: JournalLine[] = Array.from(byAccount.entries()).map(([account_code, debit]) => ({ account_code, debit, credit: 0 }))
+
+  postAutoEntry(
+    `auto-venda-${orderId}`, date, `Venda #${orderNumber} (pagamento dividido)`, orderNumber, 'auto_venda',
+    [
+      ...debitLines,
+      { account_code: '71', debit: 0, credit: net },
+      { account_code: '35', debit: 0, credit: iva },
+    ].filter(l => l.debit > 0 || l.credit > 0),
+  )
+}
+
+/**
  * Gera o lançamento de uma compra.
  * Débito: CMVMC (líquido) + Estado IVA Dedutível (imposto).
  * Crédito: conta de caixa/banco pelo valor bruto.

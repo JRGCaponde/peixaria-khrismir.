@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Search, Trash2, X, Printer, Receipt, Tag, ShoppingBag, Clock } from 'lucide-react'
 import { toast } from 'sonner'
-import type { Product, Category, CartItem, Order, OrderStatus, PaymentType, PreparationType, PromoCode } from '../types/database'
+import type { Product, Category, CartItem, Order, OrderStatus, PaymentType, PreparationType, PromoCode, PaymentSplitEntry } from '../types/database'
 import { getSettings } from '../lib/settings'
 import { printInvoice, printBusinessInvoice } from '../utils/invoice'
 import { printReceipt } from '../utils/receipt'
-import { registerSaleMovement, registerCreditSale } from '../lib/cashflow'
+import { registerSaleMovement, registerCreditSale, registerSplitSaleMovement } from '../lib/cashflow'
 import { getOpenShift } from './_TurnoTab'
 import { useAuthStore } from '../stores/useAuthStore'
 import { calcOrderHash } from '../utils/saft'
@@ -34,6 +34,11 @@ export default function POS() {
   const [paymentType, setPaymentType] = useState<PaymentType>('multicaixa')
   const [isCredit, setIsCredit] = useState(false)
   const [creditCustomerName, setCreditCustomerName] = useState('')
+  const [isSplit, setIsSplit] = useState(false)
+  const [splitPayments, setSplitPayments] = useState<PaymentSplitEntry[]>([
+    { method: 'dinheiro', amount: 0 },
+    { method: 'multicaixa', amount: 0 },
+  ])
   const [selectedBank, setSelectedBank] = useState('')
   const [bankAccounts, setBankAccounts] = useState<{ id: string; name: string }[]>([])
   const [showWeightDialog, setShowWeightDialog] = useState(false)
@@ -196,6 +201,15 @@ export default function POS() {
       toast.warning('Indique o nome do cliente para a venda a fiado.')
       return
     }
+    const validSplits = splitPayments.filter(s => s.amount > 0)
+    if (isSplit) {
+      const splitSum = Math.round(validSplits.reduce((s, p) => s + p.amount, 0) * 100) / 100
+      if (validSplits.length < 2) { toast.warning('Indique pelo menos dois valores para dividir o pagamento.'); return }
+      if (Math.abs(splitSum - cartTotal) > 0.5) {
+        toast.warning(`A soma dos pagamentos (${splitSum.toLocaleString('pt-AO')} Kz) não bate com o total (${cartTotal.toLocaleString('pt-AO')} Kz).`)
+        return
+      }
+    }
 
     const orderNumber = (() => {
       try {
@@ -216,7 +230,8 @@ export default function POS() {
       id: orderId,
       order_number: orderNumber,
       status: 'pronto' as const,
-      payment_type: paymentType,
+      payment_type: isSplit ? ('misto' as const) : paymentType,
+      payment_split: isSplit ? validSplits : undefined,
       delivery_type: 'retirada' as const,
       customer_name: isCredit ? creditCustomerName.trim() : undefined,
       payment_status: (isCredit ? 'pendente' : 'pago') as 'pago' | 'pendente',
@@ -257,6 +272,11 @@ export default function POS() {
 
     if (isCredit) {
       registerCreditSale(orderId, orderNumber, cartTotal)
+    } else if (isSplit) {
+      registerSplitSaleMovement(
+        validSplits.map(s => ({ method: s.method, amount: s.amount, account: s.method === 'multicaixa' ? selectedBank : undefined })),
+        orderNumber, orderId,
+      )
     } else {
       const bankAccount = paymentType === 'multicaixa' ? selectedBank : undefined
       registerSaleMovement(cartTotal, orderNumber, paymentType, orderId, bankAccount)
@@ -281,6 +301,8 @@ export default function POS() {
     setPromoInput('')
     setIsCredit(false)
     setCreditCustomerName('')
+    setIsSplit(false)
+    setSplitPayments([{ method: 'dinheiro', amount: 0 }, { method: 'multicaixa', amount: 0 }])
     setLastOrder(newOrder)
     setShowReceipt(true)
     toast.success(`Venda ${orderNumber} concluída!`)
@@ -501,7 +523,7 @@ export default function POS() {
         <div className="p-4 border-t space-y-4">
           <div>
             <label className="text-sm font-medium block mb-2">Pagamento</label>
-            <div className={`grid grid-cols-3 gap-2 ${isCredit ? 'opacity-40 pointer-events-none' : ''}`}>
+            <div className={`grid grid-cols-3 gap-2 ${isCredit || isSplit ? 'opacity-40 pointer-events-none' : ''}`}>
               {(['multicaixa', 'express', 'dinheiro'] as PaymentType[]).map(p => (
                 <button
                   key={p}
@@ -512,7 +534,7 @@ export default function POS() {
                 </button>
               ))}
             </div>
-            {!isCredit && paymentType === 'multicaixa' && bankAccounts.length > 0 && (
+            {!isCredit && !isSplit && paymentType === 'multicaixa' && bankAccounts.length > 0 && (
               <div className="mt-2">
                 <label className="text-xs text-gray-500 font-medium block mb-1">Banco de destino</label>
                 <select
@@ -527,12 +549,23 @@ export default function POS() {
               </div>
             )}
 
-            <button
-              onClick={() => setIsCredit(v => !v)}
-              className={`mt-2 w-full p-2 rounded-lg text-sm font-medium border-2 border-dashed ${isCredit ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 text-amber-700 border-amber-300'}`}
-            >
-              🧾 Fiado (pagar depois)
-            </button>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <button
+                onClick={() => setIsCredit(v => !v)}
+                disabled={isSplit}
+                className={`p-2 rounded-lg text-sm font-medium border-2 border-dashed disabled:opacity-40 ${isCredit ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 text-amber-700 border-amber-300'}`}
+              >
+                🧾 Fiado
+              </button>
+              <button
+                onClick={() => setIsSplit(v => !v)}
+                disabled={isCredit}
+                className={`p-2 rounded-lg text-sm font-medium border-2 border-dashed disabled:opacity-40 ${isSplit ? 'bg-purple-500 text-white border-purple-500' : 'bg-purple-50 text-purple-700 border-purple-300'}`}
+              >
+                🔀 Dividir
+              </button>
+            </div>
+
             {isCredit && (
               <div className="mt-2">
                 <label className="text-xs text-gray-500 font-medium block mb-1">Nome do cliente</label>
@@ -543,6 +576,46 @@ export default function POS() {
                   className="w-full border border-amber-300 bg-amber-50 p-2 rounded-lg text-sm focus:ring-2 focus:ring-amber-500"
                 />
                 <p className="text-xs text-amber-700 mt-1">Vai para Contas a Receber — sem entrada em Caixa até ser liquidada.</p>
+              </div>
+            )}
+
+            {isSplit && (
+              <div className="mt-2 space-y-2 bg-purple-50 border border-purple-200 rounded-lg p-2">
+                {splitPayments.map((sp, i) => (
+                  <div key={i} className="flex gap-2">
+                    <select
+                      value={sp.method}
+                      onChange={e => setSplitPayments(list => list.map((x, xi) => xi === i ? { ...x, method: e.target.value as PaymentSplitEntry['method'] } : x))}
+                      className="border border-purple-300 bg-white p-2 rounded-lg text-sm w-32"
+                    >
+                      <option value="dinheiro">💵 Dinheiro</option>
+                      <option value="multicaixa">💳 Multicaixa</option>
+                      <option value="express">📱 Express</option>
+                    </select>
+                    <input
+                      type="number" min="0" step="1" placeholder="0"
+                      value={sp.amount || ''}
+                      onChange={e => setSplitPayments(list => list.map((x, xi) => xi === i ? { ...x, amount: Number(e.target.value) } : x))}
+                      className="flex-1 border border-purple-300 p-2 rounded-lg text-sm"
+                    />
+                  </div>
+                ))}
+                {splitPayments.some(s => s.method === 'multicaixa' && s.amount > 0) && bankAccounts.length > 0 && (
+                  <select
+                    value={selectedBank}
+                    onChange={e => setSelectedBank(e.target.value)}
+                    className="w-full border border-purple-300 bg-white p-2 rounded-lg text-sm"
+                  >
+                    {bankAccounts.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+                  </select>
+                )}
+                {(() => {
+                  const sum = splitPayments.reduce((s, p) => s + (p.amount || 0), 0)
+                  const diff = Math.round((cartTotal - sum) * 100) / 100
+                  if (diff === 0) return <p className="text-xs font-bold text-green-700">✓ Total confere</p>
+                  if (diff > 0) return <p className="text-xs font-bold text-purple-700">Falta {diff.toLocaleString('pt-AO')} Kz</p>
+                  return <p className="text-xs font-bold text-red-600">A mais {Math.abs(diff).toLocaleString('pt-AO')} Kz</p>
+                })()}
               </div>
             )}
           </div>
@@ -580,9 +653,9 @@ export default function POS() {
           <button
             onClick={handleCheckout}
             disabled={cart.length === 0}
-            className={`w-full text-white py-3 rounded-lg font-bold transition disabled:opacity-50 ${isCredit ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700' : 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700'}`}
+            className={`w-full text-white py-3 rounded-lg font-bold transition disabled:opacity-50 ${isCredit ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700' : isSplit ? 'bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:from-purple-700 hover:to-fuchsia-700' : 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700'}`}
           >
-            {isCredit ? 'FINALIZAR VENDA (FIADO)' : 'FINALIZAR VENDA'}
+            {isCredit ? 'FINALIZAR VENDA (FIADO)' : isSplit ? 'FINALIZAR VENDA (DIVIDIDA)' : 'FINALIZAR VENDA'}
           </button>
         </div>
       </div>

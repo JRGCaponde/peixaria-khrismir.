@@ -348,6 +348,7 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
         doc_type: o.doc_type ?? null, converted_to_order_id: o.converted_to_order_id ?? null,
         converted_from_order_id: o.converted_from_order_id ?? null,
         payment_status: o.payment_status ?? 'pago', paid_at: o.paid_at ?? null,
+        payment_split: o.payment_split ?? null,
         created_at: o.created_at, updated_at: o.updated_at,
         store_id: sid,
       }))
@@ -547,6 +548,7 @@ export async function syncOrder(order: Order): Promise<boolean> {
     doc_type: o.doc_type ?? null, converted_to_order_id: o.converted_to_order_id ?? null,
     converted_from_order_id: o.converted_from_order_id ?? null,
     payment_status: o.payment_status ?? 'pago', paid_at: o.paid_at ?? null,
+    payment_split: o.payment_split ?? null,
     created_at: o.created_at, updated_at: o.updated_at,
     store_id: getCurrentStoreId(),
   }

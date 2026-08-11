@@ -860,6 +860,9 @@ function OrdersTab({ orders, setOrders, storeSettings }: { orders: Order[]; setO
                       {order.payment_status === 'pendente' && (
                         <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700">FIADO</span>
                       )}
+                      {order.payment_type === 'misto' && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-purple-100 text-purple-700">DIVIDIDO</span>
+                      )}
                     </div>
                     <p className="text-sm text-gray-500">{order.customer_name || 'Venda POS'} • {new Date(order.created_at).toLocaleString('pt-AO')}</p>
                     {!isPrim && <p className="text-xs text-gray-400 capitalize">{order.delivery_type === 'delivery' ? '🚚 Entrega' : '🏪 Retirada'} • {order.payment_type}</p>}

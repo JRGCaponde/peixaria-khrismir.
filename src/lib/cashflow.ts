@@ -10,6 +10,7 @@ import { getSettings } from './settings'
 import {
   postAutoEntryForSale, postAutoEntryForPurchase, postAutoEntryForMovement, removeJournalEntry,
   postCreditEntryForSale, postCreditEntryForPurchase, postSettlementForSale, postSettlementForPurchase,
+  postAutoEntryForSplitSale,
 } from './accounting'
 
 interface CFMovement {
@@ -123,6 +124,50 @@ export function registerSaleMovement(
 }
 
 /**
+ * Regista uma venda paga em mais do que uma conta (ex: metade dinheiro,
+ * metade Multicaixa/TPA) — um movimento de caixa por cada parcela, todos
+ * ligados ao mesmo lançamento contabilístico da venda.
+ */
+export function registerSplitSaleMovement(
+  splits: { method: string; amount: number; account?: string }[],
+  orderNumber: string,
+  orderId: string,
+) {
+  const baseId = `sync-sale-${orderId}`
+  const existing = readMovements()
+  if (existing.some(m => m.id === baseId || m.id.startsWith(`${baseId}-`))) return
+
+  const accounts = readAccounts()
+  const date = format(new Date(), 'yyyy-MM-dd')
+  const movements: CFMovement[] = []
+  const journalSplits: { cashAccountCode: string; amount: number }[] = []
+
+  splits.forEach((split, i) => {
+    if (!split.amount || split.amount <= 0) return
+    const accountName = split.account || accountForPayment(split.method, accounts)
+    movements.push({
+      id: `${baseId}-${i}`, date, type: 'income',
+      description: `Venda #${orderNumber} (${split.method})`,
+      amount: split.amount, category: 'Vendas', account: accountName,
+      reference: orderNumber, created_at: new Date().toISOString(),
+    })
+    const idx = accounts.findIndex(a => a.name === accountName)
+    if (idx !== -1) accounts[idx].balance += split.amount
+    journalSplits.push({ cashAccountCode: cashAccountCode(accountName, accounts), amount: split.amount })
+  })
+  if (movements.length === 0) return
+
+  saveMovements([...movements, ...existing])
+  saveAccounts(accounts)
+  syncCfAccounts(accounts)
+  syncCfMovements(movements)
+
+  try {
+    postAutoEntryForSplitSale(orderId, orderNumber, journalSplits, getSettings().iva_rate, date)
+  } catch { /* não bloqueia a venda por falha na contabilidade */ }
+}
+
+/**
  * Anula o movimento de caixa e o lançamento contabilístico de uma venda cancelada
  * (o inverso de registerSaleMovement) — uma encomenda cancelada deixa de contar
  * como venda em Caixa e Contabilidade.
@@ -130,19 +175,20 @@ export function registerSaleMovement(
 export function cancelSaleMovement(orderId: string) {
   const id = `sync-sale-${orderId}`
   const movements = readMovements()
-  const movement = movements.find(m => m.id === id)
+  // Uma venda com pagamento dividido tem vários movimentos: sync-sale-{id}-0, -1, ...
+  const toCancel = movements.filter(m => m.id === id || m.id.startsWith(`${id}-`))
 
-  if (movement) {
-    saveMovements(movements.filter(m => m.id !== id))
-    deleteCfMovement(id)
+  if (toCancel.length > 0) {
+    saveMovements(movements.filter(m => !toCancel.includes(m)))
+    toCancel.forEach(m => deleteCfMovement(m.id))
 
     const accounts = readAccounts()
-    const idx = accounts.findIndex(a => a.name === movement.account)
-    if (idx !== -1) {
-      accounts[idx].balance -= movement.amount
-      saveAccounts(accounts)
-      syncCfAccounts(accounts)
-    }
+    toCancel.forEach(m => {
+      const idx = accounts.findIndex(a => a.name === m.account)
+      if (idx !== -1) accounts[idx].balance -= m.amount
+    })
+    saveAccounts(accounts)
+    syncCfAccounts(accounts)
   }
 
   // Tenta sempre remover o lançamento contabilístico, mesmo que o movimento de
@@ -213,7 +259,7 @@ export function reconcileCancelledSales(): number {
 
   let count = 0
   for (const order of cancelled) {
-    const hasMovement = movements.some(m => m.id === `sync-sale-${order.id}`)
+    const hasMovement = movements.some(m => m.id === `sync-sale-${order.id}` || m.id.startsWith(`sync-sale-${order.id}-`))
     const hasJournal  = journal.some((e: any) => e.id === `auto-venda-${order.id}` || e.id === `auto-venda-sync-sale-${order.id}`)
     if (hasMovement || hasJournal) {
       cancelSaleMovement(order.id)

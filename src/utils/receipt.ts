@@ -66,7 +66,16 @@ export function printReceipt(order: Order, settings: StoreSettings): void {
   rows.push(rline('TOTAL', rfmt(total) + ' Kz'))
   rows.push(rdivider('='))
   const payLabel: Record<string, string> = { dinheiro: 'Dinheiro', multicaixa: 'Multicaixa', express: 'Express' }
-  rows.push(rline('Pagamento', order.payment_status === 'pendente' ? 'FIADO (por pagar)' : (payLabel[order.payment_type] ?? order.payment_type)))
+  if (order.payment_status === 'pendente') {
+    rows.push(rline('Pagamento', 'FIADO (por pagar)'))
+  } else if (order.payment_type === 'misto' && (order as any).payment_split?.length) {
+    rows.push(rline('Pagamento', 'Dividido'))
+    for (const s of (order as any).payment_split as { method: string; amount: number }[]) {
+      rows.push(rline('  ' + (payLabel[s.method] ?? s.method), rfmt(s.amount) + ' Kz'))
+    }
+  } else {
+    rows.push(rline('Pagamento', payLabel[order.payment_type] ?? order.payment_type))
+  }
   rows.push(rdivider())
   rows.push(rcenter('Obrigado pela preferencia!'))
   if ((order as any).hash) rows.push(rcenter('Hash: ' + String((order as any).hash).slice(0, 8) + '...'))

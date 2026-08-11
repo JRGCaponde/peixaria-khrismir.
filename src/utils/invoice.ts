@@ -118,7 +118,12 @@ export function printInvoice(order: Order, settings: StoreSettings) {
     <div class="box">
       <strong>Detalhes</strong>
       <p>Entrega: ${order.delivery_type === 'delivery' ? 'Domicílio' : 'Levantamento na loja'}</p>
-      <p>Pagamento: ${order.payment_status === 'pendente' ? 'FIADO (por pagar)' : (payLabel[order.payment_type] ?? order.payment_type)}</p>
+      <p>Pagamento: ${
+        order.payment_status === 'pendente' ? 'FIADO (por pagar)' :
+        order.payment_type === 'misto' && (order as any).payment_split?.length
+          ? 'Dividido — ' + (order as any).payment_split.map((s: { method: string; amount: number }) => `${payLabel[s.method] ?? s.method}: ${s.amount.toLocaleString('pt-AO')} Kz`).join(', ')
+          : (payLabel[order.payment_type] ?? order.payment_type)
+      }</p>
       ${order.delivery_address ? `<p>Morada: ${order.delivery_address}</p>` : ''}
       ${order.delivery_zone ? `<p>Zona: ${order.delivery_zone}</p>` : ''}
     </div>
