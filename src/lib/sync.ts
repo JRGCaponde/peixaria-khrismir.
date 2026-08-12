@@ -605,9 +605,12 @@ export async function syncSettings(settings: StoreSettings) {
   const sid = getCurrentStoreId()
   // id baseado no store_id para permitir multi-loja (uuid ou fallback '1')
   const rowId = sid ?? '1'
+  // "id" já é sempre igual ao store_id nesta escrita (rowId acima) — usa "id"
+  // no onConflict porque é a chave primária (garantidamente única); store_id
+  // nunca teve uma constraint de unicidade própria na base de dados.
   const { error } = await supabase.from('store_settings').upsert(
     { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid },
-    { onConflict: 'store_id' }
+    { onConflict: 'id' }
   )
   if (error) console.error('[syncSettings]', error.message)
 }
