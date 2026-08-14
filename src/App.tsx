@@ -1,8 +1,7 @@
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
 import { useAuthStore } from './stores/useAuthStore'
-import { useState, useEffect, useRef, Component, type ReactNode } from 'react'
-import { isAppActive, syncLicenseFromCloud } from './lib/license'
+import { useEffect, useRef, Component, type ReactNode } from 'react'
 import { StoreProvider, useStore } from './lib/storeContext'
 
 // ── Bloqueio automático por inactividade ──────────────────────────
@@ -73,7 +72,6 @@ import Admin      from './pages/Admin'
 import Verify     from './pages/Verify'
 import Profile    from './pages/Profile'
 import CashFlow   from './pages/CashFlow'
-import Activation    from './pages/Activation'
 import StorePicker   from './pages/StorePicker'
 
 // --- PROTECÇÃO DE ROTAS ---
@@ -118,17 +116,8 @@ function StoreGuard({ children }: { children: React.ReactNode }) {
 
 function AppInner() {
   const { isAuthenticated, user, logout } = useAuthStore()
-  const [appActive, setAppActive] = useState(() => isAppActive())
-
-  useEffect(() => {
-    syncLicenseFromCloud().then(() => setAppActive(isAppActive()))
-  }, [])
 
   useIdleLogout(isAuthenticated, logout)
-
-  if (!appActive) {
-    return <Activation onActivated={() => setAppActive(true)} />
-  }
 
   const getHomeRoute = () => {
     if (user?.role === 'super_admin') return '/admin'
