@@ -67,18 +67,34 @@ def _run_installer(
     log_callback(f"A executar: {' '.join(command)}")
 
     try:
-        result = subprocess.run(command, capture_output=True, text=True)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
     except OSError as error:
         log_callback(f"Erro ao iniciar o instalador: {error}")
         return False
 
-    if result.returncode in success_codes:
+    # Lê a saída linha a linha à medida que é produzida, em vez de esperar
+    # o processo terminar por completo — assim os logs aparecem em tempo
+    # real na interface (a maioria dos instaladores silenciosos produz
+    # pouca ou nenhuma saída, mas quando produzem, isto capta-a).
+    assert process.stdout is not None
+    for line in process.stdout:
+        line = line.rstrip()
+        if line:
+            log_callback(line)
+
+    returncode = process.wait()
+
+    if returncode in success_codes:
         log_callback("Instalação concluída com sucesso.")
-        if result.returncode == 3010:
+        if returncode == 3010:
             log_callback("É necessário reiniciar o computador para concluir a instalação.")
         return True
 
-    log_callback(f"Instalação falhou (código de saída {result.returncode}).")
-    if result.stderr.strip():
-        log_callback(result.stderr.strip())
+    log_callback(f"Instalação falhou (código de saída {returncode}).")
     return False

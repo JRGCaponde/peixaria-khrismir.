@@ -43,7 +43,7 @@ class InstallerAssistantApp(ctk.CTk):
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(5, weight=1)
 
         header = ctk.CTkLabel(
             self,
@@ -79,12 +79,18 @@ class InstallerAssistantApp(ctk.CTk):
         )
         self.install_button.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="e")
 
+        # Barra de progresso indeterminada: instaladores genéricos não
+        # reportam percentagem real, por isso usamos uma animação contínua
+        # apenas para indicar "a trabalhar" enquanto o processo corre.
+        self.progress_bar = ctk.CTkProgressBar(self, mode="indeterminate")
+        self.progress_bar.grid(row=3, column=0, padx=20, pady=(0, 10), sticky="ew")
+        self.progress_bar.grid_remove()
+
         log_label = ctk.CTkLabel(self, text="Estado / Logs", anchor="w")
-        log_label.grid(row=3, column=0, padx=20, pady=(0, 0), sticky="nw")
+        log_label.grid(row=4, column=0, padx=20, pady=(0, 0), sticky="nw")
 
         self.log_textbox = ctk.CTkTextbox(self, state="disabled", wrap="word")
-        self.log_textbox.grid(row=4, column=0, padx=20, pady=(5, 20), sticky="nsew")
-        self.grid_rowconfigure(4, weight=1)
+        self.log_textbox.grid(row=5, column=0, padx=20, pady=(5, 20), sticky="nsew")
 
     # ------------------------------------------------------------------
     # Ações
@@ -109,6 +115,8 @@ class InstallerAssistantApp(ctk.CTk):
 
         self.select_button.configure(state="disabled")
         self.install_button.configure(state="disabled")
+        self.progress_bar.grid()
+        self.progress_bar.start()
         self.log("A iniciar instalação...")
 
         thread = threading.Thread(
@@ -130,6 +138,8 @@ class InstallerAssistantApp(ctk.CTk):
         self.after(0, self.log, message)
 
     def _on_installation_finished(self, success: bool) -> None:
+        self.progress_bar.stop()
+        self.progress_bar.grid_remove()
         self.select_button.configure(state="normal")
         self.install_button.configure(state="normal")
         if not success:
