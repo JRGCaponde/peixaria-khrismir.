@@ -5,6 +5,7 @@ instalação propriamente dita vive em `installer_core.py` e é chamada a
 partir daqui, mantendo os dois módulos desacoplados.
 """
 
+import threading
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog
@@ -106,10 +107,33 @@ class InstallerAssistantApp(ctk.CTk):
             self.log("Nenhum ficheiro selecionado.")
             return
 
+        self.select_button.configure(state="disabled")
         self.install_button.configure(state="disabled")
         self.log("A iniciar instalação...")
-        installer_core.install(self.selected_file_path, self.log)
+
+        thread = threading.Thread(
+            target=self._run_installation,
+            args=(self.selected_file_path,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_installation(self, file_path: str) -> None:
+        # Corre em segundo plano: o subprocess do instalador pode demorar,
+        # e bloquear a thread principal congelaria a janela. As atualizações
+        # à interface são sempre despachadas para a thread principal via
+        # `self.after`, porque widgets do Tkinter não são thread-safe.
+        success = installer_core.install(file_path, self._thread_safe_log)
+        self.after(0, self._on_installation_finished, success)
+
+    def _thread_safe_log(self, message: str) -> None:
+        self.after(0, self.log, message)
+
+    def _on_installation_finished(self, success: bool) -> None:
+        self.select_button.configure(state="normal")
         self.install_button.configure(state="normal")
+        if not success:
+            self.log("Instalação terminou com erros — verifique o log acima.")
 
     # ------------------------------------------------------------------
     # Utilitários
