@@ -24,6 +24,8 @@ import subprocess
 from pathlib import Path
 from typing import Callable
 
+import elevation
+
 LogCallback = Callable[[str], None]
 
 # IDs oficiais no repositório winget (confirmáveis com `winget show --id <id>`).
@@ -143,9 +145,7 @@ def _install(package_id: str, log_callback: LogCallback) -> bool:
         "--silent", "--accept-package-agreements", *_COMMON_FLAGS,
     ]
     try:
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
+        process = elevation.launch(command, log_callback)
     except OSError as error:
         log_callback(f"Erro ao iniciar o winget: {error}")
         return False

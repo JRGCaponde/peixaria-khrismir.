@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+import elevation
 import visual_fallback
 import winget_manager
 
@@ -65,9 +66,7 @@ def _install_msi(path: Path, log_callback: LogCallback) -> bool:
     log_callback(f"A executar: {' '.join(command)}")
 
     try:
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
+        process = elevation.launch(command, log_callback)
     except OSError as error:
         log_callback(f"Erro ao iniciar o instalador: {error}")
         return False
@@ -100,9 +99,7 @@ def _install_exe(path: Path, log_callback: LogCallback) -> bool:
     log_callback(f"A executar: {' '.join(command)}")
 
     try:
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
+        process = elevation.launch(command, log_callback)
     except OSError as error:
         log_callback(f"Erro ao iniciar o instalador: {error}")
         return False
