@@ -1,0 +1,17 @@
+customtkinter>=5.2.0
+pyautogui>=0.9.54
+pytesseract>=0.3.10
+pillow>=10.0.0
+
+# NOTA: pytesseract é só um wrapper Python — precisa do motor Tesseract OCR
+# instalado à parte no Windows (não é um pacote pip). Instalador oficial:
+# https://github.com/UB-Mannheim/tesseract/wiki
+# Depois de instalado, garante que a pasta do tesseract.exe está no PATH,
+# ou define manualmente no início do teu script:
+#   import pytesseract
+#   pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+#
+# NOTA: o winget (usado por winget_manager.py) já vem instalado no
+# Windows 10 (a partir da atualização 1809) e Windows 11 como parte da
+# app "App Installer". Não é um pacote pip — se faltar, instala-o pela
+# Microsoft Store.
