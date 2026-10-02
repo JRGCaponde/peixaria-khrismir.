@@ -18,7 +18,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, PromoCode, Supplier, Return, LoyaltyTransaction, MapReference } from '../types/database'
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
 import { printInvoice, printPrimaveraInvoice, type PrimaveraDocInfo } from '../utils/invoice'
-import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport } from '../utils/reports'
+import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport, printInventoryReport } from '../utils/reports'
 import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
@@ -407,8 +407,8 @@ export default function Admin() {
           {activeTab === 'promos'     && <PromosTab />}
           {activeTab === 'agt'        && <AGTTab orders={orders} storeSettings={storeSettings} purchases={purchases} />}
           {activeTab === 'settings'   && <SettingsTab settings={storeSettings} onSave={s => { setStoreSettings(s); saveSettings(s); syncSettings(s) }} />}
-          {activeTab === 'system'     && <SystemTab products={products} categories={categories} />}
-          {activeTab === 'reports'    && <ReportsTab orders={orders} purchases={purchases} storeSettings={storeSettings} />}
+          {activeTab === 'system'     && <SystemTab products={products} setProducts={setProducts} categories={categories} />}
+          {activeTab === 'reports'    && <ReportsTab orders={orders} purchases={purchases} storeSettings={storeSettings} products={products} categories={categories} />}
           {activeTab === 'sessions'   && <SessionsTab />}
           {activeTab === 'stores'     && <StoresTab />}
           {activeTab === 'vendas'     && <VendasTab />}
@@ -940,6 +940,7 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
   const [discountVal, setDiscountVal]   = useState('')
   const [priceProduct, setPriceProduct] = useState<Product | null>(null)
   const [priceVal, setPriceVal]         = useState('')
+  const [search, setSearch]             = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   const openNew  = () => { setForm({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' }); setEditing(null); setModal('new') }
@@ -1004,6 +1005,11 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
   }
 
   const lowStockList = products.filter(p => p.stock_quantity <= p.min_stock)
+  const filteredProducts = products.filter(p => {
+    const q = search.trim().toLowerCase()
+    if (!q) return true
+    return p.name.toLowerCase().includes(q) || (p.barcode ?? '').toLowerCase().includes(q)
+  })
   const waSt = getSettings()
   const waStockAlert = () => {
     const msg = `⚠️ *ALERTA DE STOCK — ${waSt.name}*\n\n` +
@@ -1030,13 +1036,26 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
           </button>
         </div>
       </div>
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+        <input
+          type="text"
+          placeholder="Procurar por nome ou código de barras..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-cyan-500"
+        />
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <thead><tr className="text-gray-400 text-sm border-b">
             <th className="pb-4">Produto</th><th className="pb-4">Preço (AOA/kg)</th><th className="pb-4">Stock</th><th className="pb-4 text-right">Acções</th>
           </tr></thead>
           <tbody className="divide-y">
-            {products.map(p => {
+            {filteredProducts.length === 0 && (
+              <tr><td colSpan={4} className="py-8 text-center text-gray-400 text-sm">Nenhum produto encontrado</td></tr>
+            )}
+            {filteredProducts.map(p => {
               const discountedPrice = p.discount ? Math.round(p.price * (1 - p.discount / 100)) : null
               return (
                 <tr key={p.id} className="group">
@@ -1087,6 +1106,7 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
               </div>
               <input ref={fileRef} type="file" accept="image/*" onChange={handleImage} className="hidden" />
               <input type="text" placeholder="Nome do Produto" required value={form.name || ''} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="w-full border p-3 rounded-xl" />
+              <input type="text" placeholder="Código de Barras (opcional — passe o leitor aqui)" value={form.barcode || ''} onChange={e => setForm(f => ({ ...f, barcode: e.target.value.trim() }))} className="w-full border p-3 rounded-xl" />
               <div className="grid grid-cols-2 gap-3">
                 <input type="number" placeholder="Preço de Venda (AOA/kg)" required min="0" value={form.price || ''} onChange={e => setForm(f => ({ ...f, price: Number(e.target.value) }))} className="w-full border p-3 rounded-xl" />
                 <input type="number" placeholder="Preço de Custo (AOA/kg)" min="0" value={form.cost_price || ''} onChange={e => setForm(f => ({ ...f, cost_price: Number(e.target.value) }))} className="w-full border p-3 rounded-xl" />
@@ -1617,8 +1637,60 @@ function CashFlowTab(_props: { cashFlow: CashFlow[]; setCashFlow: (c: CashFlow[]
 function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
   const [form, setForm] = useState({ pid: '', qty: '', price: '', provider: '', account: '' })
   const [isCredit, setIsCredit] = useState(false)
+  const [productSearch, setProductSearch] = useState('')
   const cfAccounts: any[] = (() => { try { return JSON.parse(localStorage.getItem('cf_accounts') || '[]') } catch { return [] } })()
   const suppliers: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_suppliers') || '[]') } catch { return [] } })()
+
+  // ── Compra Múltipla (lançar uma fatura inteira com vários produtos de uma vez) ──
+  const [bulkMode, setBulkMode] = useState(false)
+  const [bulkForm, setBulkForm] = useState({ provider: '', account: '' })
+  const [bulkIsCredit, setBulkIsCredit] = useState(false)
+  const [bulkSearch, setBulkSearch] = useState('')
+  type BulkRow = { rowId: string; pid: string; qty: string; price: string }
+  const [bulkRows, setBulkRows] = useState<BulkRow[]>([])
+
+  const bulkAddProduct = (prod: any) => {
+    setBulkRows(rows => [...rows, { rowId: crypto.randomUUID(), pid: prod.id, qty: '1', price: String(prod.cost_price || '') }])
+    setBulkSearch('')
+  }
+  const bulkUpdateRow = (rowId: string, patch: Partial<BulkRow>) => {
+    setBulkRows(rows => rows.map(r => r.rowId === rowId ? { ...r, ...patch } : r))
+  }
+  const bulkRemoveRow = (rowId: string) => setBulkRows(rows => rows.filter(r => r.rowId !== rowId))
+  const bulkTotal = bulkRows.reduce((sum, r) => sum + (Number(r.qty) || 0) * (Number(r.price) || 0), 0)
+
+  const addBulk = (e: React.FormEvent) => {
+    e.preventDefault()
+    const validRows = bulkRows.filter(r => r.pid && Number(r.qty) > 0 && Number(r.price) > 0)
+    if (!validRows.length) { toast.error('Adicione pelo menos um produto com quantidade e preço válidos'); return }
+    if (validRows.length !== bulkRows.length) { toast.error('Há linhas incompletas (produto, quantidade e preço são obrigatórios) — foram ignoradas'); }
+
+    const now = new Date().toISOString()
+    const newPurchases = validRows.map(r => {
+      const prod = products.find((p: any) => p.id === r.pid)
+      const qty = Number(r.qty); const price = Number(r.price)
+      return { id: crypto.randomUUID(), product_id: r.pid, product_name: prod?.name ?? '', quantity: qty, unit_price: price, total_price: qty * price, supplier: bulkForm.provider, created_at: now, payment_status: bulkIsCredit ? 'pendente' : 'pago' }
+    })
+
+    const upP = [...newPurchases, ...purchases]; setPurchases(upP); localStorage.setItem('khrismir_purchases', JSON.stringify(upP))
+
+    // soma as quantidades por produto (pode haver a mesma linha repetida) e actualiza o stock de uma só vez
+    const qtyByProduct = new Map<string, number>()
+    for (const np of newPurchases) qtyByProduct.set(np.product_id, (qtyByProduct.get(np.product_id) || 0) + np.quantity)
+    const upProd = products.map((p: any) => qtyByProduct.has(p.id) ? { ...p, stock_quantity: p.stock_quantity + qtyByProduct.get(p.id)! } : p)
+    setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
+    syncProducts(upProd)
+
+    // um lançamento de custo por produto (mantém a contabilidade correcta por linha da fatura)
+    for (const np of newPurchases) {
+      if (bulkIsCredit) registerCreditPurchase(np.id, np.product_name || 'Produto', np.total_price)
+      else registerPurchaseMovement(np.total_price, np.product_name || 'Produto', bulkForm.provider, bulkForm.account || undefined, np.id)
+    }
+    syncPurchases(newPurchases)
+
+    setBulkRows([]); setBulkForm({ provider: '', account: '' }); setBulkIsCredit(false)
+    toast.success(`${newPurchases.length} produto(s) registados! Total: ${bulkTotal.toLocaleString()} Kz`)
+  }
 
   // ── Sync PRIMAVERA ────────────────────────────────────────────────────────
   const [syncState, setSyncState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
@@ -1680,7 +1752,7 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
     }
     syncPurchases([newP])
 
-    setForm({ pid: '', qty: '', price: '', provider: '', account: '' }); setIsCredit(false); toast.success('Compra registada!')
+    setForm({ pid: '', qty: '', price: '', provider: '', account: '' }); setIsCredit(false); setProductSearch(''); toast.success('Compra registada!')
   }
   const exportExcel = () => {
     const rows = purchases.map((p: any) => ({ Data: new Date(p.created_at).toLocaleDateString('pt-AO'), Produto: products.find((x: any) => x.id === p.product_id)?.name || '', Quantidade: p.quantity, 'Preço Custo': p.unit_price, 'Total Custo': p.total_price, Fornecedor: p.supplier || '' }))
@@ -1690,7 +1762,125 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
     toast.success('Excel exportado!')
   }
   return (
+    <div className="space-y-6">
+      <div className="flex gap-2">
+        <button type="button" onClick={() => setBulkMode(false)} className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${!bulkMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 border hover:bg-gray-50'}`}>
+          Compra Simples
+        </button>
+        <button type="button" onClick={() => setBulkMode(true)} className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${bulkMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 border hover:bg-gray-50'}`}>
+          Compra Múltipla (Fatura)
+        </button>
+      </div>
+
+      {bulkMode && (
+        <form onSubmit={addBulk} className="bg-white p-6 rounded-2xl shadow-sm space-y-4">
+          <h3 className="font-bold text-lg">Lançar Fatura com Vários Produtos</h3>
+          {products.length === 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 flex items-start gap-2">
+              <span className="text-lg leading-none">⚠️</span>
+              <span>Sem produtos criados. Vá a <strong>Produtos</strong> para adicionar produtos primeiro.</span>
+            </div>
+          )}
+          <input
+            type="text"
+            value={bulkSearch}
+            onChange={e => {
+              const val = e.target.value
+              setBulkSearch(val)
+              const match = products.find((p: any) => p.barcode && p.barcode === val.trim())
+              if (match) bulkAddProduct(match)
+            }}
+            onKeyDown={e => {
+              if (e.key !== 'Enter') return
+              e.preventDefault()
+              const code = bulkSearch.trim()
+              if (!code) return
+              const match = products.find((p: any) => p.barcode && p.barcode === code)
+              if (match) bulkAddProduct(match)
+              else toast.error(`Nenhum produto encontrado com o código de barras "${code}"`)
+            }}
+            placeholder="Ler código de barras ou procurar por nome para adicionar linha..."
+            className="w-full border p-3 rounded-xl"
+          />
+          {bulkSearch.trim() && (
+            <div className="border rounded-xl divide-y max-h-48 overflow-y-auto">
+              {products
+                .filter((p: any) => p.name.toLowerCase().includes(bulkSearch.trim().toLowerCase()) || (p.barcode ? p.barcode.toLowerCase().includes(bulkSearch.trim().toLowerCase()) : false))
+                .slice(0, 20)
+                .map((p: any) => (
+                  <button type="button" key={p.id} onClick={() => bulkAddProduct(p)} className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 transition">
+                    {p.name} {p.barcode ? <span className="text-gray-400">· {p.barcode}</span> : null}
+                  </button>
+                ))}
+            </div>
+          )}
+
+          {bulkRows.length > 0 && (
+            <div className="border rounded-xl overflow-hidden">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-gray-50 text-xs font-bold text-gray-400 uppercase">
+                  <tr>
+                    <th className="p-2">Produto</th>
+                    <th className="p-2 w-24">Qtd. (kg)</th>
+                    <th className="p-2 w-28">Preço</th>
+                    <th className="p-2 w-28 text-right">Subtotal</th>
+                    <th className="p-2 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {bulkRows.map(r => {
+                    const prod = products.find((p: any) => p.id === r.pid)
+                    const sub = (Number(r.qty) || 0) * (Number(r.price) || 0)
+                    return (
+                      <tr key={r.rowId}>
+                        <td className="p-2 font-medium">{prod?.name ?? '—'}</td>
+                        <td className="p-2"><input type="number" value={r.qty} onChange={e => bulkUpdateRow(r.rowId, { qty: e.target.value })} min="0.1" step="0.1" className="w-full border rounded-lg px-2 py-1" /></td>
+                        <td className="p-2"><input type="number" value={r.price} onChange={e => bulkUpdateRow(r.rowId, { price: e.target.value })} min="1" step="1" className="w-full border rounded-lg px-2 py-1" /></td>
+                        <td className="p-2 text-right font-semibold">{sub.toLocaleString()} Kz</td>
+                        <td className="p-2 text-center">
+                          <button type="button" onClick={() => bulkRemoveRow(r.rowId)} className="text-red-500 hover:text-red-700">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {suppliers.length > 0 ? (
+            <select value={bulkForm.provider} onChange={e => setBulkForm({ ...bulkForm, provider: e.target.value })} className="w-full border p-2 rounded-xl">
+              <option value="">Seleccionar Fornecedor</option>
+              {suppliers.map((s: any) => <option key={s.id} value={s.name}>{s.name}</option>)}
+            </select>
+          ) : (
+            <input value={bulkForm.provider} onChange={e => setBulkForm({ ...bulkForm, provider: e.target.value })} placeholder="Fornecedor (opcional)" className="w-full border p-2 rounded-xl" />
+          )}
+          {!bulkIsCredit && cfAccounts.length > 0 && (
+            <select value={bulkForm.account} onChange={e => setBulkForm({ ...bulkForm, account: e.target.value })} className="w-full border p-2 rounded-xl">
+              <option value="">Conta de Pagamento (automático)</option>
+              {cfAccounts.map((a: any) => <option key={a.id} value={a.name}>{a.name}</option>)}
+            </select>
+          )}
+          <label className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800 cursor-pointer">
+            <input type="checkbox" checked={bulkIsCredit} onChange={e => setBulkIsCredit(e.target.checked)} className="w-4 h-4" />
+            <span>🧾 Compra a Crédito (pagar depois — vai para Contas a Pagar)</span>
+          </label>
+
+          <div className="flex justify-between items-center pt-2 border-t">
+            <span className="font-bold text-gray-600">Total da Fatura</span>
+            <span className="font-bold text-xl text-red-600">{bulkTotal.toLocaleString()} Kz</span>
+          </div>
+          <button type="submit" disabled={bulkRows.length === 0} className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed">
+            Registar {bulkRows.length > 0 ? `${bulkRows.length} Produto(s)` : 'Compra'}
+          </button>
+        </form>
+      )}
+
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {!bulkMode && (
       <form onSubmit={add} className="bg-white p-6 rounded-2xl shadow-sm space-y-4">
         <h3 className="font-bold text-lg">Entrada de Stock</h3>
         {products.length === 0 && (
@@ -1699,9 +1889,39 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
             <span>Sem produtos criados. Vá a <strong>Produtos</strong> para adicionar produtos primeiro.</span>
           </div>
         )}
+        <input
+          type="text"
+          value={productSearch}
+          onChange={e => {
+            const val = e.target.value
+            setProductSearch(val)
+            // Leitores que não enviam Enter (ou enviam Tab): assim que o
+            // texto acumulado corresponde exactamente a um código de
+            // barras, seleccionamos logo — não é preciso esperar por tecla nenhuma.
+            const match = products.find((p: any) => p.barcode && p.barcode === val.trim())
+            if (match) { setForm(f => ({ ...f, pid: match.id })); setProductSearch(''); toast.success(`${match.name} seleccionado (leitor de código de barras)`) }
+          }}
+          onKeyDown={e => {
+            if (e.key !== 'Enter') return
+            e.preventDefault()
+            const code = productSearch.trim()
+            if (!code) return
+            const match = products.find((p: any) => p.barcode && p.barcode === code)
+            if (match) { setForm(f => ({ ...f, pid: match.id })); setProductSearch(''); toast.success(`${match.name} seleccionado (leitor de código de barras)`) }
+            else if (/^\d{4,}$/.test(code)) toast.error(`Nenhum produto encontrado com o código de barras "${code}"`)
+          }}
+          placeholder="Buscar produto ou ler código de barras..."
+          className="w-full border p-2 rounded-xl"
+        />
         <select value={form.pid} onChange={e => setForm({ ...form, pid: e.target.value })} className="w-full border p-2 rounded-xl" required>
           <option value="">Escolha o Produto</option>
-          {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {products
+            .filter((p: any) => {
+              const q = productSearch.trim().toLowerCase()
+              if (!q) return true
+              return p.name.toLowerCase().includes(q) || (p.barcode ? p.barcode.toLowerCase().includes(q) : false)
+            })
+            .map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <input type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} placeholder="Quantidade (kg)" className="w-full border p-2 rounded-xl" required min="0.1" step="0.1" />
         <input type="number" value={form.price} onChange={e => setForm({ ...form, price: e.target.value })} placeholder="Preço Custo (AOA/kg)" className="w-full border p-2 rounded-xl" required min="1" step="1" />
@@ -1725,7 +1945,8 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
         </label>
         <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition">Registar Compra</button>
       </form>
-      <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm overflow-hidden">
+      )}
+      <div className={`bg-white rounded-2xl shadow-sm overflow-hidden ${bulkMode ? 'lg:col-span-3' : 'lg:col-span-2'}`}>
         <div className="flex justify-between items-center p-4 border-b gap-2 flex-wrap">
           <h3 className="font-bold">Histórico de Compras</h3>
           <div className="flex gap-2">
@@ -1779,6 +2000,7 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
           </tbody>
         </table>
       </div>
+    </div>
     </div>
   )
 }
@@ -2275,6 +2497,17 @@ function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s
           ))}
         </div>
         <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Slogan (página inicial)</label>
+          <input type="text" value={form.tagline} onChange={e => setForm(f => ({ ...f, tagline: e.target.value }))}
+            placeholder="ex: Frescor do Mar à sua Mesa" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Descrição (página inicial)</label>
+          <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+            placeholder="Texto de apresentação mostrado na página inicial da loja online" rows={3}
+            className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
+        </div>
+        <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Endereço Completo</label>
           <input type="text" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))}
             placeholder="Rua, Bairro, Cidade, Província" className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" />
@@ -2347,7 +2580,7 @@ function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s
 }
 
 /* ─── RELATÓRIOS PDF ─── */
-function ReportsTab({ orders, purchases, storeSettings }: { orders: Order[]; purchases: Purchase[]; storeSettings: StoreSettings }) {
+function ReportsTab({ orders, purchases, storeSettings, products, categories }: { orders: Order[]; purchases: Purchase[]; storeSettings: StoreSettings; products: Product[]; categories: Category[] }) {
   const today = new Date().toISOString().slice(0, 10)
   const thisMonth = today.slice(0, 7)
 
@@ -2358,9 +2591,10 @@ function ReportsTab({ orders, purchases, storeSettings }: { orders: Order[]; pur
   const [moMonth,   setMoMonth]     = useState(thisMonth)
   const [cfFrom,    setCfFrom]      = useState(today.slice(0, 8) + '01')
   const [cfTo,      setCfTo]        = useState(today)
+  const [invOnlyLowStock, setInvOnlyLowStock] = useState(false)
 
-  const cashFlow: CashFlow[] = (() => {
-    try { return JSON.parse(localStorage.getItem('khrismir_cashflow') || '[]') } catch { return [] }
+  const cfMovements: any[] = (() => {
+    try { return JSON.parse(localStorage.getItem('cf_movements') || '[]') } catch { return [] }
   })()
 
   const card = (icon: React.ReactNode, title: string, desc: string, children: React.ReactNode) => (
@@ -2488,9 +2722,26 @@ function ReportsTab({ orders, purchases, storeSettings }: { orders: Order[]; pur
                   className="w-full border p-2.5 rounded-xl text-sm" />
               </div>
             </div>
-            <button onClick={() => printCashFlowReport(cashFlow, storeSettings, cfFrom, cfTo)}
+            <button onClick={() => printCashFlowReport(cfMovements, storeSettings, cfFrom, cfTo)}
               className="w-full flex items-center justify-center gap-2 bg-green-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-green-700 transition">
               <Download className="w-4 h-4" /> Gerar PDF de Caixa
+            </button>
+          </div>
+        )}
+
+        {/* Inventário */}
+        {card(
+          <Package className="w-5 h-5" />,
+          'Relatório de Inventário',
+          'Stock actual, valor de custo/venda e produtos em falta',
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={invOnlyLowStock} onChange={e => setInvOnlyLowStock(e.target.checked)} className="w-4 h-4" />
+              Apenas produtos em falta/baixo stock
+            </label>
+            <button onClick={() => printInventoryReport(products, categories, storeSettings, invOnlyLowStock)}
+              className="w-full flex items-center justify-center gap-2 bg-teal-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold hover:bg-teal-700 transition">
+              <Download className="w-4 h-4" /> Gerar PDF de Inventário
             </button>
           </div>
         )}
@@ -2574,7 +2825,7 @@ function SessionsTab() {
 }
 
 /* ─── SISTEMA ─── */
-function SystemTab({ products, categories }: { products: Product[]; categories: Category[] }) {
+function SystemTab({ products, setProducts, categories }: { products: Product[]; setProducts: (p: Product[]) => void; categories: Category[] }) {
   const [syncing,      setSyncing]      = useState(false)
   const [deploying,    setDeploying]    = useState(false)
   const [deployLogs,   setDeployLogs]   = useState<string[]>([])
@@ -2633,6 +2884,7 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
   const BACKUP_MAP: Record<string, string> = {
     products:     'khrismir_products',
     categories:   'khrismir_categories',
+    suppliers:    'khrismir_suppliers',
     orders:       'khrismir_orders',
     cashflow:     'khrismir_cashflow',
     purchases:    'khrismir_purchases',
@@ -2678,11 +2930,36 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
         // ── FASE 1: Apagar tudo ──────────────────────────────────
         const tid = toast.loading('Fase 1/3 — A apagar dados existentes…')
 
+        // Guarda a loja actualmente seleccionada ANTES de limpar o
+        // localStorage — sem isto, a Fase 3 (pushAll) sincronizava tudo
+        // com store_id NULL (getCurrentStoreId() ficava vazio depois do
+        // clear()), e os produtos ficavam órfãos: gravados no Supabase
+        // mas invisíveis assim que voltasses a seleccionar a loja
+        // (a leitura filtra sempre por store_id = loja actual).
+        const currentStoreRaw = localStorage.getItem('khrismir_current_store')
+
         // 1a. Apagar Supabase via RPC reset_all_data() (SECURITY DEFINER — bypassa RLS)
         await clearAllData()
 
         // 1b. Limpar localStorage completamente
         localStorage.clear()
+
+        // Repõe a loja seleccionada imediatamente — tem de estar disponível
+        // antes da Fase 3, para os dados restaurados ficarem associados à
+        // loja certa em vez de ficarem órfãos (store_id nulo).
+        if (currentStoreRaw) localStorage.setItem('khrismir_current_store', currentStoreRaw)
+
+        // clearAllData() (RPC reset_all_data) apaga também a própria linha
+        // da loja na tabela "stores" — não só os dados de negócio. Sem
+        // recriá-la aqui, todos os inserts da Fase 3 abaixo violam
+        // "*_store_id_fkey" (a loja referenciada deixou de existir).
+        // Recria a loja com o MESMO id antes de reenviar qualquer coisa.
+        if (currentStoreRaw) {
+          try {
+            const storeInfo = JSON.parse(currentStoreRaw)
+            await syncStore(storeInfo)
+          } catch { /* non-fatal — pushAll abaixo reporta o erro na mesma */ }
+        }
 
         // ── FASE 2: Carregar backup ──────────────────────────────
         toast.loading('Fase 2/3 — A carregar dados do backup…', { id: tid })
@@ -2711,14 +2988,123 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
         toast.dismiss(tid)
         if (result.ok) {
           toast.success(`✅ Restauro completo! ${(result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('✅')).length} tabelas sincronizadas.`)
+          setTimeout(() => window.location.reload(), 1800)
         } else {
-          toast.success('✅ Backup restaurado localmente.')
-          toast.warning('Sincronização cloud parcial — verifique a ligação.')
+          // IMPORTANTE: nunca recarregar a página aqui. O reload dispara um
+          // pullAll() que substitui (sem fusão) tabelas como produtos pelo
+          // que estiver na cloud — se o pushAll acima falhou a meio (ex:
+          // coluna em falta no Supabase), a cloud fica incompleta/vazia
+          // nessa tabela, e o reload apagava os dados restaurados localmente
+          // antes sequer de dares por isso. Ficam em localStorage até
+          // corrigires o erro e sincronizares outra vez manualmente.
+          const erros = (result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('❌'))
+          toast.warning(
+            `Backup restaurado apenas localmente — a sincronização com a cloud falhou:\n${erros.join('\n')}\n\n` +
+            `NÃO recarregues a página. Corrige o erro acima e usa "Sincronizar Agora" antes de recarregar, ` +
+            `senão os dados locais podem ser substituídos por dados incompletos da cloud.`,
+            { duration: 20000 }
+          )
         }
-        setTimeout(() => window.location.reload(), 1800)
       } catch (err) { toast.error('Ficheiro inválido ou corrompido') }
     }
     reader.readAsText(file); e.target.value = ''
+  }
+
+  // Importação segura: só acrescenta/actualiza produtos, categorias (as
+  // necessárias para os produtos) e fornecedores — nunca apaga nada, nem
+  // aqui nem no resto da app (encomendas, caixa, clientes, turnos, etc.
+  // ficam intocados). Ao contrário de "Restaurar Backup", não faz reset
+  // nenhum antes de carregar o ficheiro.
+  const importCatalogOnly = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = async ev => {
+      try {
+        const data = JSON.parse(ev.target?.result as string)
+        const incomingProducts: Product[] = Array.isArray(data.products) ? data.products : []
+        const incomingCategories: Category[] = Array.isArray(data.categories) ? data.categories : []
+        const incomingSuppliers: any[] = Array.isArray(data.suppliers) ? data.suppliers : []
+        if (!incomingProducts.length && !incomingCategories.length && !incomingSuppliers.length) {
+          toast.error('Ficheiro inválido — sem produtos, categorias ou fornecedores')
+          e.target.value = ''
+          return
+        }
+
+        const ok = confirm(
+          `Importar Catálogo\n\n` +
+          `Isto vai acrescentar/actualizar:\n` +
+          `• ${incomingProducts.length} produto(s)\n` +
+          `• ${incomingCategories.length} categoria(s)\n` +
+          `• ${incomingSuppliers.length} fornecedor(es)\n\n` +
+          `Nada mais é apagado nem alterado — encomendas, caixa, clientes, turnos, definições, etc. ` +
+          `ficam exactamente como estão.\n\nContinuar?`
+        )
+        if (!ok) { e.target.value = ''; return }
+
+        const tid = toast.loading('A importar catálogo…')
+
+        const mergeById = <T extends { id: string }>(existing: T[], incoming: T[]): T[] => {
+          const map = new Map(existing.map(x => [x.id, x]))
+          for (const item of incoming) map.set(item.id, item)
+          return Array.from(map.values())
+        }
+        const lsRead = <T,>(k: string): T[] => { try { return JSON.parse(localStorage.getItem(k) || '[]') } catch { return [] } }
+
+        const mergedCategories = mergeById(lsRead<Category>('khrismir_categories'), incomingCategories)
+        const mergedProducts   = mergeById(lsRead<Product>('khrismir_products'), incomingProducts)
+        const mergedSuppliers  = mergeById(lsRead<any>('khrismir_suppliers'), incomingSuppliers)
+
+        localStorage.setItem('khrismir_categories', JSON.stringify(mergedCategories))
+        localStorage.setItem('khrismir_products', JSON.stringify(mergedProducts))
+        localStorage.setItem('khrismir_suppliers', JSON.stringify(mergedSuppliers))
+
+        // Só sincroniza estas três tabelas — syncProducts/syncCategories/syncSuppliers
+        // fazem upsert (onConflict: 'id'), nunca apagam registos que já existiam.
+        // Categorias TÊM de ir primeiro e esperar pela resposta — os produtos
+        // referenciam category_id como chave estrangeira, por isso enviá-los
+        // em paralelo falhava sempre que o produto chegasse ao servidor antes
+        // da categoria ficar gravada.
+        const results: any[] = []
+        if (incomingCategories.length) results.push(await syncCategories(mergedCategories))
+        if (incomingProducts.length) results.push(await syncProducts(mergedProducts))
+        if (incomingSuppliers.length) results.push(await syncSuppliers(mergedSuppliers))
+        toast.dismiss(tid)
+        const failed = results.filter((r: any) => r && r.ok === false)
+        if (failed.length) {
+          // Não recarregar aqui — ver comentário equivalente em importBackup().
+          // Um reload dispara pullAll(), que substitui produtos/categorias
+          // pelo que estiver na cloud sem fusão; se a sincronização acima
+          // falhou (ex: coluna em falta), a cloud continua desactualizada e
+          // o reload apagava a importação que acabaste de fazer localmente.
+          const errMsgs = failed.map((r: any) => r.error).filter(Boolean).join(' | ')
+          toast.warning(
+            `Catálogo actualizado apenas localmente — a sincronização com a cloud falhou: ${errMsgs}\n\n` +
+            `NÃO recarregues a página. Corrige o erro e usa "Sincronizar Agora" antes de recarregar.`,
+            { duration: 20000 }
+          )
+        } else {
+          toast.success(`✅ Catálogo importado: ${incomingProducts.length} produto(s), ${incomingCategories.length} categoria(s), ${incomingSuppliers.length} fornecedor(es).`)
+          setTimeout(() => window.location.reload(), 1200)
+        }
+      } catch (err) { toast.error('Ficheiro inválido ou corrompido') }
+    }
+    reader.readAsText(file); e.target.value = ''
+  }
+
+  // Produtos importados de outra loja/backup trazem o stock de origem, que
+  // não corresponde ao stock físico real aqui — zera tudo para recomeçar a
+  // contagem do zero (via Compras → Entrada de Stock).
+  const zeroStock = async () => {
+    if (!products.length) { toast.info('Sem produtos para zerar'); return }
+    if (!confirm(`Zerar o stock de ${products.length} produto(s) para 0? Preços, nomes e restantes dados ficam intocados.`)) return
+    const updated = products.map(p => ({ ...p, stock_quantity: 0 }))
+    setProducts(updated)
+    localStorage.setItem('khrismir_products', JSON.stringify(updated))
+    const tid = toast.loading('A zerar stock…')
+    const result = await syncProducts(updated)
+    toast.dismiss(tid)
+    if (result.ok) toast.success(`Stock zerado em ${updated.length} produto(s).`)
+    else toast.warning(`Stock zerado localmente — sincronização cloud falhou: ${result.error}`)
   }
 
   const handleReset = async () => {
@@ -2970,6 +3356,24 @@ function SystemTab({ products, categories }: { products: Product[]; categories: 
               <input type="file" accept=".json" onChange={importBackup} className="hidden" />
             </label>
           </div>
+          <p className="text-xs text-gray-400 -mt-2">⚠️ "Importar Backup" apaga TUDO antes de carregar o ficheiro (local e cloud).</p>
+        </div>
+        <div className="p-4 border border-cyan-100 rounded-2xl bg-cyan-50/30">
+          <h4 className="font-bold text-cyan-800 mb-1">📦 Importar Catálogo</h4>
+          <p className="text-sm text-cyan-700 mb-3">
+            Acrescenta ou actualiza só produtos, categorias e fornecedores a partir de um ficheiro.<br />
+            <span className="text-xs text-cyan-600">Nunca apaga nada — encomendas, caixa, clientes, turnos e o resto ficam intocados. Seguro para usar noutro PC sem perder o que já lá está.</span>
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <label className="flex items-center gap-2 bg-cyan-600 text-white px-4 py-2 rounded-xl text-sm font-bold cursor-pointer hover:bg-cyan-700 transition w-fit">
+              <Upload className="w-4 h-4" /> Importar Catálogo
+              <input type="file" accept=".json" onChange={importCatalogOnly} className="hidden" />
+            </label>
+            <button onClick={zeroStock} className="flex items-center gap-2 bg-white border border-cyan-300 text-cyan-700 px-4 py-2 rounded-xl text-sm font-bold hover:bg-cyan-50 transition">
+              <RotateCcw className="w-4 h-4" /> Zerar Stock dos Produtos
+            </button>
+          </div>
+          <p className="text-xs text-cyan-600 mt-2">Útil depois de importar um catálogo de outra loja — o stock vem da origem e normalmente não corresponde ao stock físico aqui.</p>
         </div>
         <div className="p-4 border border-green-100 rounded-2xl bg-green-50/30">
           <h4 className="font-bold text-green-800 mb-1">☁️ Restaurar da Cloud</h4>

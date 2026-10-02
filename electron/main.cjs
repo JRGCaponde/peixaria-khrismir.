@@ -44,6 +44,20 @@ function createWindow() {
   win.once('ready-to-show', () => win.show())
 
   win.webContents.setWindowOpenHandler(({ url }) => {
+    // Recibos, facturas, relatórios e QR codes abrem com window.open('', ...)
+    // (URL em branco) para escrever HTML e chamar print() — isto tem de criar
+    // mesmo uma janela Electron, senão window.open() devolve null e a
+    // impressão falha silenciosamente. Só links externos reais (ex: WhatsApp)
+    // são desviados para o browser do sistema.
+    if (!url || url === 'about:blank') {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          autoHideMenuBar: true,
+          webPreferences: { contextIsolation: true, nodeIntegration: false },
+        },
+      }
+    }
     shell.openExternal(url)
     return { action: 'deny' }
   })
@@ -150,6 +164,14 @@ ipcMain.handle('deploy:all', async (event) => {
     })
   })
 })
+
+// ── IPC: fila de envio offline (SQLite) ─────────────────────────────────────
+const localDb = require('./db.cjs')
+
+ipcMain.handle('db:upsertLocal', (_event, table, rows) => localDb.upsertLocal(table, rows))
+ipcMain.handle('db:deleteLocal', (_event, table, id) => localDb.deleteLocal(table, id))
+ipcMain.handle('db:getPendingOutbox', () => localDb.getPendingOutbox())
+ipcMain.handle('db:markSynced', (_event, ids) => localDb.markSynced(ids))
 
 // ── Arranque ─────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {

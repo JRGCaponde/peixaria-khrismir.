@@ -8,3 +8,4 @@ release/
 khrismir-backup-*.json
 khrismir-fiscal-*.xlsx
 SAF-T_*.json
+.env*

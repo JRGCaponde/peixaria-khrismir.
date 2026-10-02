@@ -5,6 +5,7 @@ import { Fish, Eye, EyeOff, Mail, ArrowLeft, KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
 import CryptoJS from 'crypto-js'
 import { supabase, isSupabaseReady } from '../lib/supabase'
+import { getSettings } from '../lib/settings'
 
 type View = 'login' | 'register' | 'forgot' | 'reset'
 
@@ -135,7 +136,7 @@ export default function Auth() {
              view === 'forgot'   ? 'Recuperar Senha'    :
                                    'Nova Senha'}
           </h2>
-          <p className="text-cyan-100 text-sm mt-1">Peixaria Khrismir</p>
+          <p className="text-cyan-100 text-sm mt-1">{getSettings().name}</p>
         </div>
 
         {/* Login */}

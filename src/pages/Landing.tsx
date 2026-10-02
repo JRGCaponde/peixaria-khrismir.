@@ -16,10 +16,9 @@ export default function Landing() {
             </div>
           </div>
           <h1 className="text-4xl md:text-6xl font-bold mb-4">{s.name}</h1>
-          <p className="text-xl md:text-2xl text-cyan-100 mb-8">Frescor do Mar à sua Mesa</p>
+          <p className="text-xl md:text-2xl text-cyan-100 mb-8">{s.tagline}</p>
           <p className="text-lg text-cyan-50 max-w-2xl mx-auto mb-8">
-            Os melhores peixes e mariscos frescos de Angola. Qualidade garantida, 
-            preparo personalizado e entrega no conforto da sua casa.
+            {s.description}
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link
@@ -35,7 +34,7 @@ export default function Landing() {
       {/* Features */}
       <section className="py-16 bg-white">
         <div className="container mx-auto px-4">
-          <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">Por que escolher a Khrismir?</h2>
+          <h2 className="text-3xl font-bold text-center text-gray-800 mb-12">Por que escolher a {s.name}?</h2>
           <div className="grid md:grid-cols-3 gap-8">
             <div className="bg-gradient-to-br from-cyan-50 to-blue-50 p-8 rounded-2xl shadow-lg border border-cyan-100">
               <div className="bg-cyan-100 w-16 h-16 rounded-full flex items-center justify-center mb-4">

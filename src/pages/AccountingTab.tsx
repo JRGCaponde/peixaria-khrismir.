@@ -11,6 +11,7 @@ import {
 } from '../lib/accounting'
 import { reconcileCancelledSales, reconcileMovements } from '../lib/cashflow'
 import { useAuthStore } from '../stores/useAuthStore'
+import { clearJournalEntries } from '../lib/sync'
 
 const fmt = (n: number) => (n ?? 0).toLocaleString('pt-AO', { maximumFractionDigits: 2 }) + ' Kz'
 
@@ -25,6 +26,7 @@ const CLASS_LABELS: Record<number, string> = {
 export default function AccountingTab() {
   const [sub, setSub] = useState<SubTab>('diario')
   const [reconciling, setReconciling] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   const subTabs: { id: SubTab; label: string; icon: React.ElementType }[] = [
     { id: 'diario',    label: 'Diário',                   icon: BookOpen },
@@ -48,6 +50,33 @@ export default function AccountingTab() {
     }
   }
 
+  const zerarContabilidade = async () => {
+    const nEntries = getJournalEntries().length
+    if (nEntries === 0) { toast.info('Já não há lançamentos — a Contabilidade já está a zero.'); return }
+    const ok = confirm(
+      `⚠️ ZERAR CONTABILIDADE\n\n` +
+      `Isto vai apagar os ${nEntries} lançamento${nEntries > 1 ? 's' : ''} do Diário (local e cloud) — ` +
+      `Balancete, Demonstração de Resultados e Balanço voltam todos a zero.\n\n` +
+      `NÃO apaga nada do Plano de Contas, nem do Fluxo de Caixa, encomendas ou compras — só os lançamentos contabilísticos.\n\n` +
+      `Atenção: se depois carregares em "Reconciliar Caixa com Contabilidade", os lançamentos automáticos de vendas/compras ` +
+      `já existentes no Caixa voltam a ser gerados (é o que essa função faz). Isto é só para lançamentos manuais ficarem ` +
+      `mesmo removidos, ou para recomeçares um exercício contabilístico do zero.\n\nContinuar?`
+    )
+    if (!ok) return
+    setClearing(true)
+    const tid = toast.loading('A zerar a Contabilidade…')
+    localStorage.setItem('khrismir_journal', '[]')
+    const result = await clearJournalEntries()
+    toast.dismiss(tid)
+    setClearing(false)
+    if (result.ok) {
+      toast.success('Contabilidade zerada — a recarregar…')
+      setTimeout(() => window.location.reload(), 1000)
+    } else {
+      toast.warning('Zerado localmente — sincronização cloud falhou, verifique a ligação.')
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-start gap-3">
@@ -58,23 +87,38 @@ export default function AccountingTab() {
         </p>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <button onClick={runReconcile} disabled={reconciling}
           className="flex items-center gap-2 bg-white border border-gray-200 text-gray-600 px-3 py-1.5 rounded-xl text-xs font-bold hover:bg-gray-50 transition disabled:opacity-50">
           <RefreshCw className={`w-3.5 h-3.5 ${reconciling ? 'animate-spin' : ''}`} />
           Reconciliar Caixa com Contabilidade
         </button>
+        <button onClick={zerarContabilidade} disabled={clearing}
+          className="flex items-center gap-2 bg-white border border-red-200 text-red-600 px-3 py-1.5 rounded-xl text-xs font-bold hover:bg-red-50 transition disabled:opacity-50">
+          <Trash2 className="w-3.5 h-3.5" />
+          Zerar Contabilidade
+        </button>
       </div>
 
-      <div className="flex gap-2 border-b border-gray-200 overflow-x-auto pb-0">
-        {subTabs.map(t => (
-          <button key={t.id} onClick={() => setSub(t.id)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition -mb-px ${
-              sub === t.id ? 'border-cyan-600 text-cyan-600' : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}>
-            <t.icon className="w-4 h-4" /> {t.label}
-          </button>
-        ))}
+      {/* Navegação em estilo "ribbon" (inspirada num ERP contabilístico profissional):
+          ícones grandes por separador, agrupados numa barra de ferramentas com legenda. */}
+      <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+        <div className="flex items-stretch overflow-x-auto">
+          {subTabs.map((t, i) => (
+            <button key={t.id} onClick={() => setSub(t.id)}
+              className={`flex flex-col items-center justify-center gap-1.5 px-6 py-3.5 min-w-[104px] text-xs font-semibold whitespace-nowrap transition ${
+                i > 0 ? 'border-l border-gray-100' : ''
+              } ${
+                sub === t.id ? 'bg-cyan-50 text-cyan-700' : 'text-gray-500 hover:bg-gray-50'
+              }`}>
+              <t.icon className={`w-5 h-5 ${sub === t.id ? 'text-cyan-600' : 'text-gray-400'}`} />
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="px-4 py-1.5 bg-gradient-to-r from-slate-50 to-white border-t border-gray-200 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+          Contabilidade
+        </div>
       </div>
 
       {sub === 'plano'     && <PlanoContasTab />}

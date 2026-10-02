@@ -28,4 +28,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.once('deploy:done', handler)
     return () => ipcRenderer.removeListener('deploy:done', handler)
   },
+
+  /**
+   * Fila de envio offline (SQLite, no processo principal) — permite a app
+   * continuar a funcionar sem internet. Ver electron/db.cjs.
+   */
+  db: {
+    upsertLocal: (table, rows) => ipcRenderer.invoke('db:upsertLocal', table, rows),
+    deleteLocal: (table, id) => ipcRenderer.invoke('db:deleteLocal', table, id),
+    getPendingOutbox: () => ipcRenderer.invoke('db:getPendingOutbox'),
+    markSynced: (ids) => ipcRenderer.invoke('db:markSynced', ids),
+  },
 })
