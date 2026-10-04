@@ -173,6 +173,19 @@ ipcMain.handle('db:deleteLocal', (_event, table, id) => localDb.deleteLocal(tabl
 ipcMain.handle('db:getPendingOutbox', () => localDb.getPendingOutbox())
 ipcMain.handle('db:markSynced', (_event, ids) => localDb.markSynced(ids))
 
+// ── IPC: armazém principal (kv) — o SQLite é a fonte de verdade dos dados ───
+// As versões "Sync" existem porque o preload tem de carregar os dados ANTES de
+// a app arrancar (e gravar no fecho da janela), sem esperar por Promises.
+ipcMain.on('kv:getAllSync', (event) => {
+  try { event.returnValue = localDb.kvGetAll() }
+  catch (e) { console.error('[kv:getAllSync]', e.message); event.returnValue = null }
+})
+ipcMain.on('kv:setManySync', (event, entries) => {
+  try { localDb.kvSetMany(entries); event.returnValue = true }
+  catch (e) { console.error('[kv:setManySync]', e.message); event.returnValue = false }
+})
+ipcMain.handle('kv:setMany', (_event, entries) => localDb.kvSetMany(entries))
+
 // ── Arranque ─────────────────────────────────────────────────────────────────
 app.whenReady().then(() => {
   buildMenu()

@@ -1,3 +1,4 @@
+import './lib/sqliteMirror' // 1.º import: tem de estar activo antes de qualquer módulo escrever no localStorage
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'

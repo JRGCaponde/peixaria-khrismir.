@@ -34,7 +34,43 @@ function getDb() {
       synced_at TEXT
     )
   `)
+  // Armazém principal dos dados da app: uma linha por chave (ex: khrismir_products,
+  // cf_movements) com o JSON completo. O SQLite é a fonte de verdade — no arranque
+  // o preload copia daqui para o localStorage (cache de trabalho da app).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `)
   return db
+}
+
+function kvGetAll() {
+  return getDb().prepare('SELECT key, value FROM kv').all().map(r => ({ key: r.key, value: r.value }))
+}
+
+/** entries: [{ key, value }] — value null apaga a chave. Tudo numa transacção. */
+function kvSetMany(entries) {
+  const d = getDb()
+  const now = new Date().toISOString()
+  const set = d.prepare(
+    `INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  )
+  const del = d.prepare('DELETE FROM kv WHERE key = ?')
+  d.exec('BEGIN')
+  try {
+    for (const { key, value } of entries) {
+      if (value === null) del.run(key)
+      else set.run(key, value, now)
+    }
+    d.exec('COMMIT')
+  } catch (e) {
+    d.exec('ROLLBACK')
+    throw e
+  }
 }
 
 function upsertLocal(table, rows) {
@@ -68,4 +104,4 @@ function markSynced(ids) {
   for (const id of ids) stmt.run(now, id)
 }
 
-module.exports = { upsertLocal, deleteLocal, getPendingOutbox, markSynced }
+module.exports = { upsertLocal, deleteLocal, getPendingOutbox, markSynced, kvGetAll, kvSetMany }
