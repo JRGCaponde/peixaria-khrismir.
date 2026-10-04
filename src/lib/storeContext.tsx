@@ -95,6 +95,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   // acumular esses erros, desligamos a loja e mandamos escolher/criar outra.
   useEffect(() => {
     if (!store || !isSupabaseReady() || !supabase) return
+    // Loja criada sem internet ainda não existe no Supabase — não é "apagada".
+    try {
+      const local: any[] = JSON.parse(localStorage.getItem('khrismir_stores') || '[]')
+      if (local.some(s => s.id === store.id && s.pending_sync)) return
+    } catch { /* non-fatal */ }
     let cancelled = false
     ;(async () => {
       try {

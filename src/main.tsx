@@ -2,7 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
-import { pullAll, startOutboxDrain } from './lib/sync'
+import { pullAll, startOutboxDrain, startPendingStoresSync } from './lib/sync'
 import { isSupabaseReady } from './lib/supabase'
 import { startRealtime } from './lib/realtime'
 import { useAuthStore } from './stores/useAuthStore'
@@ -17,6 +17,7 @@ async function boot() {
   // No Electron, a app tem de arrancar mesmo sem internet — os dados ficam no
   // SQLite local (ver lib/localDB.ts) e a fila de envio (startOutboxDrain) trata
   // de sincronizar assim que a ligação voltar. Por isso não bloqueia no pullAll.
+  startPendingStoresSync()
   if (isElectron()) startOutboxDrain()
   if (isSupabaseReady()) {
     await pullAll()      // Primeiro pull: traz tudo do Supabase para localStorage/SQLite

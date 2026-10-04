@@ -26,7 +26,7 @@ import {
   syncPurchases, syncSuppliers, deleteSupplier, clearAllData,
   deleteProduct, deleteCategory, deletePromo,
   syncStore, deleteStorePermanent, syncLoyalty, syncReturns,
-  syncMapReferences, deleteMapReference,
+  syncMapReferences, deleteMapReference, getLocalStores, mergeCloudStores,
 } from '../lib/sync'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
@@ -173,7 +173,11 @@ export default function Admin() {
           } else {
             const erros = (result.details ?? []).filter(d => typeof d === 'string' && d.startsWith('❌'))
             const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
-            toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
+            // Falta de ligação não é um erro: a app funciona offline e a
+            // sincronização inicial repete-se da próxima vez que o Admin abrir.
+            const semLigacao = !navigator.onLine || /Failed to fetch|NetworkError|fetch failed|Load failed/i.test(msg)
+            if (semLigacao) console.info('[autoSync] sem ligação — sincroniza quando houver internet')
+            else toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
           }
         }
       }
@@ -3895,8 +3899,12 @@ function StoresTab() {
       const local: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_stores') || '[]') } catch { return [] } })()
       setStores(local); setLoading(false); return
     }
-    const { data } = await supabase.from('stores').select('*').order('name')
-    if (data) { setStores(data); localStorage.setItem('khrismir_stores', JSON.stringify(data)) }
+    try {
+      const { data } = await supabase.from('stores').select('*').order('name')
+      if (data) setStores(mergeCloudStores(data))
+    } catch {
+      setStores(getLocalStores())
+    }
     setLoading(false)
   }
 

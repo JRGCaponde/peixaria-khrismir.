@@ -9,7 +9,7 @@ import { Store, LogOut, ChevronRight, Search, MapPin, Phone, Plus, X } from 'luc
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useStore, type StoreInfo } from '../lib/storeContext'
 import { useAuthStore } from '../stores/useAuthStore'
-import { pullAll, syncStore } from '../lib/sync'
+import { pullAll, syncStore, getLocalStores, mergeCloudStores } from '../lib/sync'
 import { startRealtime } from '../lib/realtime'
 import { toast } from 'sonner'
 
@@ -32,6 +32,8 @@ export default function StorePicker() {
 
   async function loadStores() {
     setLoading(true)
+    // A lista local aparece logo — a nuvem só acrescenta, nunca é precisa para ver/criar lojas.
+    setStores(getLocalStores().filter(s => s.active !== false))
     if (!isSupabaseReady() || !supabase) { setLoading(false); return }
 
     try {
@@ -41,8 +43,9 @@ export default function StorePicker() {
         .eq('active', true)
         .order('name')
 
-      if (error) { toast.error('Erro ao carregar lojas'); return }
-      setStores(data ?? [])
+      if (!error) setStores(mergeCloudStores(data ?? []).filter(s => s.active !== false))
+    } catch {
+      /* sem internet — fica a lista local */
     } finally {
       setLoading(false)
     }
@@ -79,8 +82,9 @@ export default function StorePicker() {
         iva_rate: form.iva_rate ? Number(form.iva_rate) : 14,
         active: true,
       })
-      if (!result) { toast.error('Erro ao criar loja. Verifique a ligação ao Supabase.'); return }
-      toast.success(`Loja "${form.name}" criada com sucesso!`)
+      const pending = getLocalStores().find(s => s.id === result.id)?.pending_sync
+      if (pending) toast.success(`Loja "${form.name}" criada neste dispositivo — sincroniza com a nuvem quando houver internet.`)
+      else toast.success(`Loja "${form.name}" criada com sucesso!`)
       setShowCreate(false)
       setForm(emptyForm())
       await loadStores()

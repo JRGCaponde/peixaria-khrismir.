@@ -123,7 +123,7 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       lsSet('cf_movements', merged)
     }
 
-    if (storesData.data)   lsSet('khrismir_stores', storesData.data)
+    if (storesData.data)   mergeCloudStores(storesData.data)
 
     if (accAccounts.data && accAccounts.data.length > 0) lsSet('khrismir_accounts', accAccounts.data)
     if (mapRefs.data) lsSet('khrismir_map_references', mapRefs.data)
@@ -685,12 +685,67 @@ export async function syncSettings(settings: StoreSettings) {
 
 // ── LOJAS ─────────────────────────────────────────────────
 
+// Lojas são "local primeiro": criar/editar uma loja grava SEMPRE em
+// khrismir_stores (com pending_sync=true) e nunca falha por falta de Supabase.
+// O envio para a nuvem é best-effort — se falhar, a loja fica marcada como
+// pendente e syncPendingStores() volta a tentar (ao arrancar, a cada 30s e
+// quando a internet volta).
+const STORES_KEY = 'khrismir_stores'
+
+export function getLocalStores(): any[] {
+  return ls<any[]>(STORES_KEY, [])
+}
+
+/**
+ * Junta as lojas vindas da nuvem com as locais ainda por enviar — sem isto, um
+ * pullAll()/listagem substituía a lista e fazia "desaparecer" uma loja acabada
+ * de criar sem internet. Grava o resultado em localStorage e devolve-o.
+ */
+export function mergeCloudStores(cloud: any[]): any[] {
+  const cloudIds = new Set(cloud.map(s => s.id))
+  const pending = getLocalStores().filter(s => s.pending_sync && !cloudIds.has(s.id))
+  const merged = [...cloud, ...pending]
+  lsSet(STORES_KEY, merged)
+  return merged
+}
+
+async function pushPendingStore(id: string): Promise<boolean> {
+  if (!isSupabaseReady() || !supabase) return false
+  const store = getLocalStores().find(s => s.id === id)
+  if (!store) return true
+  const { pending_sync: _pending, ...row } = store
+  try {
+    const { error } = await supabase.from('stores').upsert(row, { onConflict: 'id' })
+    if (error) { console.warn('[syncStore]', error.message); return false }
+  } catch (e: any) {
+    console.warn('[syncStore] sem ligação:', e?.message)
+    return false
+  }
+  lsSet(STORES_KEY, getLocalStores().map(s => {
+    if (s.id !== id) return s
+    const { pending_sync: _p, ...synced } = s
+    return synced
+  }))
+  return true
+}
+
+export async function syncPendingStores() {
+  for (const s of getLocalStores().filter(x => x.pending_sync)) await pushPendingStore(s.id)
+}
+
+export function startPendingStoresSync() {
+  syncPendingStores()
+  setInterval(syncPendingStores, 30_000)
+  window.addEventListener('online', syncPendingStores)
+}
+
 export async function syncStore(store: {
   id?: string; name: string; slug?: string; address?: string; phone?: string;
   email?: string; whatsapp?: string; nif?: string; iva_rate?: number; active?: boolean
-}): Promise<{ id: string } | null> {
-  if (!isSupabaseReady() || !supabase) return null
-  const row: any = {
+}): Promise<{ id: string }> {
+  const id = store.id ?? crypto.randomUUID()
+  const row = {
+    id,
     name: store.name,
     slug: store.slug || store.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
     address: store.address ?? '',
@@ -702,17 +757,14 @@ export async function syncStore(store: {
     active: store.active !== false,
     updated_at: new Date().toISOString(),
   }
-  if (store.id) row.id = store.id
-  try {
-    const { data, error } = await supabase.from('stores').upsert(row, { onConflict: 'id' }).select('id').maybeSingle()
-    if (error) { console.warn('[syncStore]', error.message); return null }
-    return data
-  } catch (e: any) {
-    // Sem ligação à internet — o chamador (StorePicker) trata isto como falha de rede
-    // e cria a loja apenas localmente.
-    console.warn('[syncStore] sem ligação:', e?.message)
-    return null
-  }
+  const local = getLocalStores()
+  const idx = local.findIndex(s => s.id === id)
+  const entry = { ...(idx >= 0 ? local[idx] : {}), ...row, pending_sync: true }
+  if (idx >= 0) local[idx] = entry; else local.push(entry)
+  lsSet(STORES_KEY, local)
+
+  await pushPendingStore(id)
+  return { id }
 }
 
 // ── PONTOS DE REFERÊNCIA DO MAPA (entrega por distância) ───────
@@ -739,6 +791,8 @@ export async function deleteMapReference(id: string) {
  * Retorna { ok, error } para o chamador tratar.
  */
 export async function deleteStorePermanent(id: string): Promise<{ ok: boolean; error?: string }> {
+  // Loja que nunca chegou ao Supabase: não há nada para apagar lá.
+  if (getLocalStores().find(s => s.id === id)?.pending_sync) return { ok: true }
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const { error } = await supabase.from('stores').delete().eq('id', id)
   if (error) return { ok: false, error: error.message }
