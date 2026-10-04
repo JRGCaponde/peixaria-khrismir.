@@ -89,6 +89,7 @@ const electronDir = path.join(APP_DIR, 'electron')
 fs.mkdirSync(electronDir, { recursive: true })
 fs.copyFileSync(path.join(__dirname, 'electron/main.cjs'),    path.join(electronDir, 'main.cjs'))
 fs.copyFileSync(path.join(__dirname, 'electron/preload.cjs'), path.join(electronDir, 'preload.cjs'))
+fs.copyFileSync(path.join(__dirname, 'electron/db.cjs'),      path.join(electronDir, 'db.cjs'))
 
 // Marcador com o caminho do projecto (para o botão de deploy nativo)
 fs.writeFileSync(path.join(OUT_DIR, '.khrismir-project-root'), __dirname)
