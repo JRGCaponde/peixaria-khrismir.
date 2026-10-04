@@ -530,7 +530,7 @@ export async function syncProducts(products: Product[]): Promise<{ ok: boolean; 
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncProducts] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
-  const { error } = await supabase.from('products').upsert(products.map(p => ({
+  const productRows = products.map(p => ({
     id: p.id, name: p.name, price: p.price, cost_price: p.cost_price ?? 0,
     unit: p.unit, stock_quantity: p.stock_quantity, min_stock: p.min_stock,
     allow_whole: p.allow_whole, allow_clean: p.allow_clean,
@@ -538,7 +538,9 @@ export async function syncProducts(products: Product[]): Promise<{ ok: boolean; 
     // category_id NULL (não '') — string vazia viola a FK para categories(id)
     category_id: p.category_id || null, image_url: p.image_url ?? '',
     expiry_date: p.expiry_date ?? null, barcode: p.barcode ?? null, discount: p.discount ?? 0, store_id: sid,
-  })), { onConflict: 'id' })
+  }))
+  enqueueUpsert('products', productRows) // fila local (Electron)
+  const { error } = await supabase.from('products').upsert(productRows, { onConflict: 'id' })
   if (error) { console.error('[syncProducts]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -581,10 +583,12 @@ export async function syncCategories(categories: Category[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncCategories] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('categories').upsert(categories.map(c => ({
+  const categoryRows = categories.map(c => ({
     id: c.id, name: c.name, description: c.description ?? '', image_url: c.image_url ?? '',
     store_id: sid,
-  })), { onConflict: 'id' })
+  }))
+  enqueueUpsert('categories', categoryRows) // fila local (Electron)
+  const { error } = await supabase.from('categories').upsert(categoryRows, { onConflict: 'id' })
   if (error) console.error('[syncCategories]', error.message)
 }
 
@@ -613,20 +617,20 @@ export async function syncOrder(order: Order): Promise<boolean> {
     created_at: o.created_at, updated_at: o.updated_at,
     store_id: getCurrentStoreId(),
   }
+  enqueueUpsert('orders', [orderRow]) // fila local (Electron)
   const { error } = await supabase.from('orders').upsert(orderRow, { onConflict: 'id' })
   if (error) { console.warn('Sync order error:', error.message); return false }
   const items = o.items || []
   if (items.length) {
     const sid = getCurrentStoreId()
-    const { error: ie } = await supabase.from('order_items').upsert(
-      items.map((i: any) => ({
-        id: i.id, order_id: order.id, product_id: i.product_id ?? '',
-        product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
-        unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
-        total_price: i.total_price ?? 0, store_id: sid,
-      })),
-      { onConflict: 'id' }
-    )
+    const itemRows = items.map((i: any) => ({
+      id: i.id, order_id: order.id, product_id: i.product_id ?? '',
+      product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
+      unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
+      total_price: i.total_price ?? 0, store_id: sid,
+    }))
+    enqueueUpsert('order_items', itemRows) // fila local (Electron)
+    const { error: ie } = await supabase.from('order_items').upsert(itemRows, { onConflict: 'id' })
     if (ie) { console.warn('Sync order items error:', ie.message); return false }
   }
   return true
@@ -653,13 +657,15 @@ export async function syncPurchases(purchases: any[]) {
   if (!valid.length) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncPurchases] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('purchases').upsert(valid.map(p => ({
+  const purchaseRows = valid.map(p => ({
     id: p.id, product_id: p.product_id ?? '', product_name: p.product_name ?? '',
     quantity: p.quantity ?? 0, unit_price: p.unit_price ?? 0, total_price: p.total_price ?? 0,
     supplier: p.supplier ?? '', created_at: p.created_at,
     payment_status: p.payment_status ?? 'pago', paid_at: p.paid_at ?? null,
     store_id: sid,
-  })), { onConflict: 'id' })
+  }))
+  enqueueUpsert('purchases', purchaseRows) // fila local (Electron)
+  const { error } = await supabase.from('purchases').upsert(purchaseRows, { onConflict: 'id' })
   if (error) console.error('[syncPurchases]', error.message)
 }
 
@@ -671,10 +677,9 @@ export async function syncSettings(settings: StoreSettings) {
   // "id" já é sempre igual ao store_id nesta escrita (rowId acima) — usa "id"
   // no onConflict porque é a chave primária (garantidamente única); store_id
   // nunca teve uma constraint de unicidade própria na base de dados.
-  const { error } = await supabase.from('store_settings').upsert(
-    { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid },
-    { onConflict: 'id' }
-  )
+  const settingsRow = { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid }
+  enqueueUpsert('store_settings', [settingsRow]) // fila local (Electron)
+  const { error } = await supabase.from('store_settings').upsert(settingsRow, { onConflict: 'id' })
   if (error) console.error('[syncSettings]', error.message)
 }
 
@@ -716,14 +721,14 @@ export async function syncMapReferences(points: any[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncMapReferences] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('map_references').upsert(
-    points.map(p => ({ id: p.id, name: p.name, lat: p.lat, lng: p.lng, store_id: sid })),
-    { onConflict: 'id' }
-  )
+  const pointRows = points.map(p => ({ id: p.id, name: p.name, lat: p.lat, lng: p.lng, store_id: sid }))
+  enqueueUpsert('map_references', pointRows) // fila local (Electron)
+  const { error } = await supabase.from('map_references').upsert(pointRows, { onConflict: 'id' })
   if (error) console.error('[syncMapReferences]', error.message)
 }
 
 export async function deleteMapReference(id: string) {
+  enqueueDelete('map_references', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('map_references').delete().eq('id', id)
   if (error) console.error('[deleteMapReference]', error.message)
@@ -744,7 +749,9 @@ export async function syncDeliveryZones(zones: DeliveryZone[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncDeliveryZones] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('delivery_zones').upsert(zones.map(z => ({ ...z, store_id: sid })), { onConflict: 'id' })
+  const zoneRows = zones.map(z => ({ ...z, store_id: sid }))
+  enqueueUpsert('delivery_zones', zoneRows) // fila local (Electron)
+  const { error } = await supabase.from('delivery_zones').upsert(zoneRows, { onConflict: 'id' })
   if (error) console.error('[syncDeliveryZones]', error.message)
 }
 
@@ -752,7 +759,9 @@ export async function syncPromos(promos: PromoCode[]): Promise<{ ok: boolean; er
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncPromos] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
-  const { error } = await supabase.from('promo_codes').upsert(promos.map(p => ({ ...p, store_id: sid })), { onConflict: 'id' })
+  const promoRows = promos.map(p => ({ ...p, store_id: sid }))
+  enqueueUpsert('promo_codes', promoRows) // fila local (Electron)
+  const { error } = await supabase.from('promo_codes').upsert(promoRows, { onConflict: 'id' })
   if (error) { console.error('[syncPromos]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -761,12 +770,15 @@ export async function syncSuppliers(suppliers: any[]): Promise<{ ok: boolean; er
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncSuppliers] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
-  const { error } = await supabase.from('suppliers').upsert(suppliers.map(s => ({ ...s, store_id: sid })), { onConflict: 'id' })
+  const supplierRows = suppliers.map(s => ({ ...s, store_id: sid }))
+  enqueueUpsert('suppliers', supplierRows) // fila local (Electron)
+  const { error } = await supabase.from('suppliers').upsert(supplierRows, { onConflict: 'id' })
   if (error) { console.error('[syncSuppliers]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
 
 export async function deleteSupplier(id: string) {
+  enqueueDelete('suppliers', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('suppliers').delete().eq('id', id)
   if (error) console.error('[deleteSupplier]', error.message)
@@ -776,14 +788,16 @@ export async function syncShifts(shifts: any[]) {
   if (!isSupabaseReady() || !supabase || !shifts.length) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncShifts] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('shift_sessions').upsert(shifts.map(s => ({
+  const shiftRows = shifts.map(s => ({
     id: s.id, opened_at: s.opened_at, closed_at: s.closed_at ?? null,
     opening_balance: s.opening_balance ?? 0, closing_balance: s.closing_balance ?? null,
     cash_counted: s.cash_counted ?? null, difference: s.difference ?? null,
     opened_by: s.opened_by ?? '', opened_by_id: s.opened_by_id ?? null,
     closed_by: s.closed_by ?? null, notes: s.notes ?? '',
     store_id: sid,
-  })), { onConflict: 'id' })
+  }))
+  enqueueUpsert('shift_sessions', shiftRows) // fila local (Electron)
+  const { error } = await supabase.from('shift_sessions').upsert(shiftRows, { onConflict: 'id' })
   if (error) console.error('[syncShifts]', error.message)
 }
 
@@ -864,13 +878,19 @@ export async function deleteCfCategory(id: string) {
 
 // ── Fila de envio offline (Electron) ─────────────────────────
 //
-// Substitui o "faz-e-esquece": no Electron, cada escrita local (upsertLocal/
-// deleteLocal em localDB.ts) fica registada em sync_outbox (SQLite) até ser
-// confirmada no Supabase. drainOutbox() lê os pendentes, tenta enviá-los, e só
-// marca como sincronizado o que realmente confirmou — uma falha de rede ou de
-// sessão deixa a linha na fila para a próxima tentativa, em vez de desaparecer
-// silenciosamente (foi exactamente a falta disto que causou vários bugs de
-// perda de dados nesta app).
+// Substitui o "faz-e-esquece": no Electron, cada chamada enqueueUpsert/
+// enqueueDelete (localDB.ts) regista a escrita em sync_outbox (SQLite) até
+// ser confirmada no Supabase. drainOutbox() lê os pendentes, tenta enviá-los,
+// e só marca como sincronizado o que realmente confirmou — uma falha de rede
+// ou de sessão deixa a linha na fila para a próxima tentativa, em vez de
+// desaparecer silenciosamente (foi exactamente a falta disto que causou
+// vários bugs de perda de dados nesta app).
+//
+// cf_accounts/cf_categories/cf_movements enfileiram a linha em bruto (antes
+// de mapear para colunas do Supabase) — por isso precisam de uma função de
+// mapeamento aqui. As restantes tabelas já enfileiram a linha pronta a
+// enviar (mapeada antes de chamar enqueueUpsert), por isso dispensam entrada
+// neste mapa — drainOutbox usa o payload tal e qual nesses casos.
 const UPSERT_MAP: Record<string, (row: any, sid: string) => any> = {
   cf_accounts: (a, sid) => ({
     id: a.id, name: a.name, balance: a.balance ?? 0,
@@ -908,12 +928,15 @@ export async function drainOutbox(): Promise<void> {
 
     const synced: number[] = []
     for (const entry of pending) {
+      // cf_accounts/cf_categories/cf_movements guardam a linha em bruto (precisa de
+      // mapear para o formato do Supabase); as restantes tabelas já guardam a linha
+      // pronta a enviar (foi construída antes de ser enfileirada), usa-se tal e qual.
       const mapRow = UPSERT_MAP[entry.table_name]
-      if (!mapRow) continue // tabela ainda não coberta pela fila offline
+      const row = mapRow ? mapRow(entry.payload, sid) : entry.payload
 
       const { error } = entry.op === 'delete'
         ? await supabase.from(entry.table_name).delete().eq('id', entry.row_id)
-        : await supabase.from(entry.table_name).upsert(mapRow(entry.payload, sid), { onConflict: 'id' })
+        : await supabase.from(entry.table_name).upsert(row, { onConflict: 'id' })
 
       if (error) {
         console.error(`[drainOutbox] ${entry.table_name}/${entry.op}`, error.message)
@@ -938,6 +961,7 @@ export function startOutboxDrain() {
 
 export async function deleteJournalEntry(id: string) {
   markDeleted(id)
+  enqueueDelete('journal_entries', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('journal_entries').delete().eq('id', id)
   if (error) console.error('[deleteJournalEntry]', error.message)
@@ -959,14 +983,13 @@ export async function syncAccountingAccounts(accounts: any[]) {
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncAccountingAccounts] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('accounting_accounts').upsert(
-    accounts.map(a => ({
-      id: a.id, code: a.code, name: a.name, class: a.class,
-      nature: a.nature, editable: a.editable ?? true,
-      store_id: sid,
-    })),
-    { onConflict: 'id' }
-  )
+  const accountRows = accounts.map(a => ({
+    id: a.id, code: a.code, name: a.name, class: a.class,
+    nature: a.nature, editable: a.editable ?? true,
+    store_id: sid,
+  }))
+  enqueueUpsert('accounting_accounts', accountRows) // fila local (Electron)
+  const { error } = await supabase.from('accounting_accounts').upsert(accountRows, { onConflict: 'id' })
   if (error) console.error('[syncAccountingAccounts]', error.message)
 }
 
@@ -974,37 +997,40 @@ export async function syncJournalEntries(entries: any[]) {
   if (!isSupabaseReady() || !supabase || !entries.length) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncJournalEntries] Sem loja seleccionada — sincronização cancelada'); return }
-  const { error } = await supabase.from('journal_entries').upsert(
-    entries.map(e => ({
-      id: e.id, date: e.date, description: e.description ?? '',
-      reference: e.reference ?? null, source: e.source ?? 'manual',
-      lines: e.lines ?? [], created_at: e.created_at ?? new Date().toISOString(),
-      store_id: sid,
-    })),
-    { onConflict: 'id' }
-  )
+  const entryRows = entries.map(e => ({
+    id: e.id, date: e.date, description: e.description ?? '',
+    reference: e.reference ?? null, source: e.source ?? 'manual',
+    lines: e.lines ?? [], created_at: e.created_at ?? new Date().toISOString(),
+    store_id: sid,
+  }))
+  enqueueUpsert('journal_entries', entryRows) // fila local (Electron)
+  const { error } = await supabase.from('journal_entries').upsert(entryRows, { onConflict: 'id' })
   if (error) console.error('[syncJournalEntries]', error.message)
 }
 
 export async function deleteProduct(id: string) {
+  enqueueDelete('products', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('products').delete().eq('id', id)
   if (error) console.error('[deleteProduct]', error.message)
 }
 
 export async function deleteCategory(id: string) {
+  enqueueDelete('categories', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('categories').delete().eq('id', id)
   if (error) console.error('[deleteCategory]', error.message)
 }
 
 export async function deleteZone(id: string) {
+  enqueueDelete('delivery_zones', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('delivery_zones').delete().eq('id', id)
   if (error) console.error('[deleteZone]', error.message)
 }
 
 export async function deletePromo(id: string) {
+  enqueueDelete('promo_codes', id) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('promo_codes').delete().eq('id', id)
   if (error) console.error('[deletePromo]', error.message)
@@ -1018,11 +1044,13 @@ export async function syncLoyalty(transactions: any[]): Promise<{ ok: boolean; e
   if (!isSupabaseReady() || !supabase || !transactions.length) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncLoyalty] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
-  const { error } = await supabase.from('loyalty_transactions').upsert(transactions.map(t => ({
+  const transactionRows = transactions.map(t => ({
     id: t.id, client_id: t.client_id ?? '', client_name: t.client_name ?? '',
     points: t.points ?? 0, type: t.type, order_id: t.order_id ?? '',
     created_at: t.created_at, store_id: sid,
-  })), { onConflict: 'id' })
+  }))
+  enqueueUpsert('loyalty_transactions', transactionRows) // fila local (Electron)
+  const { error } = await supabase.from('loyalty_transactions').upsert(transactionRows, { onConflict: 'id' })
   if (error) { console.error('[syncLoyalty]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -1031,12 +1059,14 @@ export async function syncReturns(returns_: any[]): Promise<{ ok: boolean; error
   if (!isSupabaseReady() || !supabase || !returns_.length) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncReturns] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
-  const { error } = await supabase.from('returns').upsert(returns_.map(r => ({
+  const returnRows = returns_.map(r => ({
     id: r.id, order_id: r.order_id ?? '', order_number: r.order_number,
     customer_name: r.customer_name ?? '', items: r.items ?? [],
     total: r.total ?? 0, reason: r.reason ?? '', created_at: r.created_at,
     store_id: sid,
-  })), { onConflict: 'id' })
+  }))
+  enqueueUpsert('returns', returnRows) // fila local (Electron)
+  const { error } = await supabase.from('returns').upsert(returnRows, { onConflict: 'id' })
   if (error) { console.error('[syncReturns]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
