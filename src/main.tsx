@@ -2,10 +2,11 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
-import { pullAll } from './lib/sync'
+import { pullAll, startOutboxDrain } from './lib/sync'
 import { isSupabaseReady } from './lib/supabase'
 import { startRealtime } from './lib/realtime'
 import { useAuthStore } from './stores/useAuthStore'
+import { isElectron } from './lib/localDB'
 
 // Sincronizar dados e arrancar Realtime. A sessão de FUNCIONÁRIO/ADMIN nunca é
 // restaurada automaticamente — tem sempre de introduzir as credenciais quando
@@ -13,8 +14,12 @@ import { useAuthStore } from './stores/useAuthStore'
 // facilitar o acesso a quem volta a usar a app (ver useAuthStore.restoreClientSession).
 async function boot() {
   await useAuthStore.getState().restoreClientSession()
+  // No Electron, a app tem de arrancar mesmo sem internet — os dados ficam no
+  // SQLite local (ver lib/localDB.ts) e a fila de envio (startOutboxDrain) trata
+  // de sincronizar assim que a ligação voltar. Por isso não bloqueia no pullAll.
+  if (isElectron()) startOutboxDrain()
   if (isSupabaseReady()) {
-    await pullAll()      // Primeiro pull: traz tudo do Supabase para localStorage
+    await pullAll()      // Primeiro pull: traz tudo do Supabase para localStorage/SQLite
     startRealtime()      // A partir daqui qualquer mudança no Supabase chega em tempo real
   }
 }

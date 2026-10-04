@@ -41,6 +41,7 @@ export interface Product {
   image_url?: string
   expiry_date?: string
   discount?: number       // desconto em % (0-100)
+  barcode?: string
   created_at?: string
 }
 

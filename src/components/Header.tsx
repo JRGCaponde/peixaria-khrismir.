@@ -1,9 +1,21 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../stores/useAuthStore'
-import { Fish, User, LogOut, Menu, X, Bell, Store, ChevronDown } from 'lucide-react'
+import { Fish, User, LogOut, Menu, X, Bell, Store, ChevronDown, PackageX } from 'lucide-react'
 import { useState, useEffect } from 'react'
+import { toast } from 'sonner'
 import { getPendingOrderCount, startOrderPolling, requestNotificationPermission } from '../lib/notifications'
 import { useStore } from '../lib/storeContext'
+import type { Product } from '../types/database'
+
+// Lê o stock baixo directamente do localStorage — visível a toda a
+// equipa (incluindo funcionários, que não têm acesso ao painel Admin
+// onde este alerta existia antes).
+function readLowStock(): Product[] {
+  try {
+    const products: Product[] = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
+    return products.filter(p => p.stock_quantity <= p.min_stock)
+  } catch { return [] }
+}
 
 export default function Header() {
   const { user, isAuthenticated, logout } = useAuthStore()
@@ -11,6 +23,7 @@ export default function Header() {
   const navigate = useNavigate()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [pendingOrders, setPendingOrders] = useState(0)
+  const [lowStock, setLowStock] = useState<Product[]>([])
 
   useEffect(() => {
     if (!isAuthenticated || user?.role === 'client') return
@@ -21,6 +34,32 @@ export default function Header() {
     })
     return stop
   }, [isAuthenticated, user?.role])
+
+  useEffect(() => {
+    if (!isAuthenticated || user?.role === 'client') return
+    setLowStock(readLowStock())
+    const handleSync = (e: Event) => {
+      const table = (e as CustomEvent).detail?.table
+      if (!table || table === 'products' || table === 'pullAll') setLowStock(readLowStock())
+    }
+    window.addEventListener('khrismir:sync', handleSync)
+    // Reserva: caso o evento não dispare (ex: alteração feita noutro separador)
+    const interval = setInterval(() => setLowStock(readLowStock()), 60000)
+    return () => {
+      window.removeEventListener('khrismir:sync', handleSync)
+      clearInterval(interval)
+    }
+  }, [isAuthenticated, user?.role])
+
+  const showLowStockList = () => {
+    if (lowStock.length === 0) return
+    const names = lowStock.slice(0, 8).map(p => `${p.name} (${p.stock_quantity} ${p.unit})`).join('\n')
+    const extra = lowStock.length > 8 ? `\n… e mais ${lowStock.length - 8}` : ''
+    toast.warning(`Stock baixo — ${lowStock.length} produto(s)`, {
+      description: names + extra,
+      duration: 8000,
+    })
+  }
 
   const handleLogout = () => {
     logout()
@@ -76,6 +115,19 @@ export default function Header() {
                       <Bell className="w-5 h-5" />
                       <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-black rounded-full w-4 h-4 flex items-center justify-center">{pendingOrders > 9 ? '9+' : pendingOrders}</span>
                     </Link>
+                  )}
+                  {user?.role !== 'client' && lowStock.length > 0 && (
+                    (user?.role === 'admin' || user?.role === 'gerente' || user?.role === 'super_admin') ? (
+                      <Link to="/admin" className="relative p-1.5 bg-white/20 rounded-full hover:bg-white/30 transition" title={`${lowStock.length} produto(s) com stock baixo`}>
+                        <PackageX className="w-5 h-5" />
+                        <span className="absolute -top-1 -right-1 bg-orange-500 text-white text-xs font-black rounded-full w-4 h-4 flex items-center justify-center">{lowStock.length > 9 ? '9+' : lowStock.length}</span>
+                      </Link>
+                    ) : (
+                      <button onClick={showLowStockList} className="relative p-1.5 bg-white/20 rounded-full hover:bg-white/30 transition" title={`${lowStock.length} produto(s) com stock baixo — carregar para ver`}>
+                        <PackageX className="w-5 h-5" />
+                        <span className="absolute -top-1 -right-1 bg-orange-500 text-white text-xs font-black rounded-full w-4 h-4 flex items-center justify-center">{lowStock.length > 9 ? '9+' : lowStock.length}</span>
+                      </button>
+                    )
                   )}
                   {/* Botão mudar loja (super_admin ou staff com acesso a múltiplas lojas) */}
                   {store && user?.role !== 'client' && (
@@ -138,6 +190,14 @@ export default function Header() {
                       <Link to="/admin" className="block py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium" onClick={() => setMobileMenuOpen(false)}>
                         Admin
                       </Link>
+                    )}
+                    {lowStock.length > 0 && (
+                      <button
+                        onClick={() => { showLowStockList(); setMobileMenuOpen(false) }}
+                        className="w-full text-left py-3 px-3 rounded-lg hover:bg-white/10 transition text-sm font-medium flex items-center gap-2 text-orange-200"
+                      >
+                        <PackageX className="w-4 h-4" /> Stock baixo ({lowStock.length})
+                      </button>
                     )}
                   </>
                 )}

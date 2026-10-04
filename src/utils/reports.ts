@@ -3,7 +3,7 @@
  * Abre nova janela HTML e aciona window.print() (→ "Guardar como PDF")
  */
 
-import type { Order, Purchase } from '../types/database'
+import type { Order, Purchase, Product, Category } from '../types/database'
 import type { StoreSettings } from '../lib/settings'
 
 // ── Utilitários ────────────────────────────────────────────────────────────────
@@ -567,28 +567,31 @@ export function printMonthlyReport(
 // ══════════════════════════════════════════════════════════════════════════════
 // 5. RELATÓRIO DE FLUXO DE CAIXA
 // ══════════════════════════════════════════════════════════════════════════════
-export function printCashFlowReport(cashFlow: any[], settings: StoreSettings, from: string, to: string) {
-  const filtered = cashFlow.filter(c => {
-    const d = (c.created_at ?? '').slice(0, 10)
-    return d >= from && d <= to
+export function printCashFlowReport(cfMovements: any[], settings: StoreSettings, from: string, to: string) {
+  // cf_movements (sistema actual) — type: 'income' | 'expense' | 'transfer'.
+  // Transferências entre contas próprias não são entrada nem saída real, por
+  // isso ficam de fora deste relatório (que é sobre dinheiro a entrar/sair).
+  const filtered = cfMovements.filter(c => {
+    const d = c.date ?? (c.created_at ?? '').slice(0, 10)
+    return d >= from && d <= to && (c.type === 'income' || c.type === 'expense')
   })
-  const entradas = filtered.filter(c => c.type === 'entrada').reduce((s, c) => s + c.amount, 0)
-  const saidas   = filtered.filter(c => c.type === 'saida').reduce((s, c) => s + c.amount, 0)
+  const entradas = filtered.filter(c => c.type === 'income').reduce((s, c) => s + c.amount, 0)
+  const saidas   = filtered.filter(c => c.type === 'expense').reduce((s, c) => s + c.amount, 0)
   const saldo    = entradas - saidas
 
   const fromLabel = new Date(from + 'T12:00').toLocaleDateString('pt-AO', { day: '2-digit', month: 'long', year: 'numeric' })
   const toLabel   = new Date(to   + 'T12:00').toLocaleDateString('pt-AO', { day: '2-digit', month: 'long', year: 'numeric' })
 
   const rows = filtered
-    .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
+    .sort((a, b) => (b.created_at ?? b.date ?? '').localeCompare(a.created_at ?? a.date ?? ''))
     .map(c => `
     <tr>
-      <td>${c.created_at ? new Date(c.created_at).toLocaleString('pt-AO', { dateStyle: 'short', timeStyle: 'short' }) : '—'}</td>
-      <td><span class="badge ${c.type === 'entrada' ? 'badge-green' : 'badge-red'}">${c.type === 'entrada' ? '▲ Entrada' : '▼ Saída'}</span></td>
+      <td>${c.created_at ? new Date(c.created_at).toLocaleString('pt-AO', { dateStyle: 'short', timeStyle: 'short' }) : (c.date ?? '—')}</td>
+      <td><span class="badge ${c.type === 'income' ? 'badge-green' : 'badge-red'}">${c.type === 'income' ? '▲ Entrada' : '▼ Saída'}</span></td>
       <td>${c.description}</td>
-      <td>${c.order_number || '—'}</td>
-      <td class="tc">${c.payment_type || '—'}</td>
-      <td class="tr bold ${c.type === 'entrada' ? 'green-t' : 'red-t'}">${c.type === 'entrada' ? '+' : '-'}${f(c.amount)} AKZ</td>
+      <td>${c.reference || '—'}</td>
+      <td class="tc">${c.account || '—'}</td>
+      <td class="tr bold ${c.type === 'income' ? 'green-t' : 'red-t'}">${c.type === 'income' ? '+' : '-'}${f(c.amount)} AKZ</td>
     </tr>`).join('')
 
   const html = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8">
@@ -596,14 +599,14 @@ export function printCashFlowReport(cashFlow: any[], settings: StoreSettings, fr
   ${reportHeader(settings, 'RELATÓRIO DE FLUXO DE CAIXA', `${fromLabel} a ${toLabel}`)}
 
   <div class="kpi-grid kpi-grid-3">
-    <div class="kpi green"><label>Total Entradas</label><div class="val">${f(entradas)} AKZ</div><div class="sub">${filtered.filter(c => c.type === 'entrada').length} movimentos</div></div>
-    <div class="kpi red"><label>Total Saídas</label><div class="val">${f(saidas)} AKZ</div><div class="sub">${filtered.filter(c => c.type === 'saida').length} movimentos</div></div>
+    <div class="kpi green"><label>Total Entradas</label><div class="val">${f(entradas)} AKZ</div><div class="sub">${filtered.filter(c => c.type === 'income').length} movimentos</div></div>
+    <div class="kpi red"><label>Total Saídas</label><div class="val">${f(saidas)} AKZ</div><div class="sub">${filtered.filter(c => c.type === 'expense').length} movimentos</div></div>
     <div class="kpi ${saldo >= 0 ? 'green' : 'red'}"><label>Saldo do Período</label><div class="val">${f(saldo)} AKZ</div><div class="sub">${saldo >= 0 ? 'Positivo ✓' : 'Negativo ⚠'}</div></div>
   </div>
 
   <h2>Movimentos de Caixa</h2>
   <table>
-    <thead><tr><th>Data/Hora</th><th>Tipo</th><th>Descrição</th><th>Nº Venda</th><th class="tc">Pagamento</th><th class="tr">Valor</th></tr></thead>
+    <thead><tr><th>Data/Hora</th><th>Tipo</th><th>Descrição</th><th>Referência</th><th class="tc">Conta</th><th class="tr">Valor</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="6" style="text-align:center;padding:20px;color:#94a3b8">Sem movimentos no período seleccionado</td></tr>'}</tbody>
     <tr class="total-row">
       <td colspan="5">SALDO DO PERÍODO</td>
@@ -615,4 +618,87 @@ export function printCashFlowReport(cashFlow: any[], settings: StoreSettings, fr
 </body></html>`
 
   openPDF(html, `Caixa ${from} a ${to}`)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 6. RELATÓRIO DE INVENTÁRIO
+// ══════════════════════════════════════════════════════════════════════════════
+export function printInventoryReport(products: Product[], categories: Category[], settings: StoreSettings, onlyLowStock = false) {
+  const catName: Record<string, string> = {}
+  categories.forEach(c => { catName[c.id] = c.name })
+
+  const list = (onlyLowStock ? products.filter(p => p.stock_quantity <= p.min_stock) : products)
+    .slice()
+    .sort((a, b) => (catName[a.category_id] ?? '').localeCompare(catName[b.category_id] ?? '') || a.name.localeCompare(b.name))
+
+  const totalCusto  = list.reduce((s, p) => s + p.stock_quantity * (p.cost_price ?? 0), 0)
+  const totalVenda  = list.reduce((s, p) => s + p.stock_quantity * p.price, 0)
+  const lucroPotencial = totalVenda - totalCusto
+  const semStock  = list.filter(p => p.stock_quantity <= 0).length
+  const baixoStock = list.filter(p => p.stock_quantity > 0 && p.stock_quantity <= p.min_stock).length
+
+  // Agrupado por categoria, na ordem já ordenada
+  const grouped: { cat: string; items: Product[] }[] = []
+  list.forEach(p => {
+    const cat = catName[p.category_id] ?? 'Sem Categoria'
+    const last = grouped[grouped.length - 1]
+    if (last && last.cat === cat) last.items.push(p)
+    else grouped.push({ cat, items: [p] })
+  })
+
+  const stockBadge = (p: Product) =>
+    p.stock_quantity <= 0 ? '<span class="badge badge-red">Sem Stock</span>'
+    : p.stock_quantity <= p.min_stock ? '<span class="badge badge-amber">Baixo</span>'
+    : '<span class="badge badge-green">OK</span>'
+
+  const rows = grouped.map(g => `
+    <tr><td colspan="8" style="background:#eef2f6;font-weight:800;color:#334155;padding:6px 8px">${g.cat} <span style="font-weight:400;color:#94a3b8">(${g.items.length} produto${g.items.length !== 1 ? 's' : ''})</span></td></tr>
+    ${g.items.map(p => `
+    <tr>
+      <td class="bold">${p.name}</td>
+      <td style="font-size:9px;color:#64748b">${p.barcode || '—'}</td>
+      <td class="tc">${p.unit}</td>
+      <td class="tc bold">${p.stock_quantity}</td>
+      <td class="tc">${p.min_stock}</td>
+      <td class="tr">${f(p.cost_price ?? 0)} AKZ</td>
+      <td class="tr">${f(p.price)} AKZ</td>
+      <td class="tc">${stockBadge(p)}</td>
+    </tr>`).join('')}
+  `).join('')
+
+  const html = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8">
+<title>Inventário ${settings.name}</title>${baseCSS()}</head><body>
+  ${reportHeader(settings, 'RELATÓRIO DE INVENTÁRIO', onlyLowStock ? 'Apenas produtos em falta / baixo stock' : 'Stock actual completo')}
+
+  <div class="kpi-grid kpi-grid-4">
+    <div class="kpi"><label>Total de Produtos</label><div class="val">${list.length}</div><div class="sub">${products.length} no catálogo</div></div>
+    <div class="kpi blue"><label>Valor de Custo em Stock</label><div class="val">${f(totalCusto)} AKZ</div></div>
+    <div class="kpi green"><label>Valor de Venda em Stock</label><div class="val">${f(totalVenda)} AKZ</div><div class="sub">Lucro potencial: ${f(lucroPotencial)} AKZ</div></div>
+    <div class="kpi ${(semStock + baixoStock) > 0 ? 'red' : ''}"><label>Alertas de Stock</label><div class="val">${semStock + baixoStock}</div><div class="sub">${semStock} sem stock · ${baixoStock} baixo</div></div>
+  </div>
+
+  <h2>Produtos por Categoria</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Produto</th><th>Código de Barras</th><th class="tc">Unidade</th>
+        <th class="tc">Stock</th><th class="tc">Stock Mín.</th>
+        <th class="tr">Preço Custo</th><th class="tr">Preço Venda</th><th class="tc">Estado</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows || '<tr><td colspan="8" style="text-align:center;padding:20px;color:#94a3b8">Sem produtos a apresentar</td></tr>'}
+    </tbody>
+    <tr class="total-row">
+      <td colspan="5">TOTAIS (${list.length} produtos)</td>
+      <td class="tr">${f(totalCusto)} AKZ</td>
+      <td class="tr">${f(totalVenda)} AKZ</td>
+      <td></td>
+    </tr>
+  </table>
+
+  ${reportFooter(settings)}
+</body></html>`
+
+  openPDF(html, `Inventário ${settings.name}`)
 }

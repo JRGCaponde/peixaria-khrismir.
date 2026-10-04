@@ -1,5 +1,7 @@
 export interface StoreSettings {
   name: string
+  tagline: string
+  description: string
   phone: string
   whatsapp: string
   email: string
@@ -24,6 +26,8 @@ export interface StoreSettings {
 
 export const DEFAULT_SETTINGS: StoreSettings = {
   name: 'Peixaria Khrismir',
+  tagline: 'Frescor do Mar à sua Mesa',
+  description: 'Os melhores peixes e mariscos frescos de Angola. Qualidade garantida, preparo personalizado e entrega no conforto da sua casa.',
   phone: '+244 929 970 984',
   whatsapp: '244929970984',
   email: 'khrismir@gmail.com',

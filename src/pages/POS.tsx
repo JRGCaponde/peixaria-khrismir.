@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Search, Trash2, X, Printer, Receipt, Tag, ShoppingBag, Clock } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Search, Trash2, X, Printer, Receipt, Tag, ShoppingBag, Clock, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Product, Category, CartItem, Order, OrderStatus, PaymentType, PreparationType, PromoCode, PaymentSplitEntry } from '../types/database'
 import { getSettings } from '../lib/settings'
@@ -52,6 +52,8 @@ export default function POS() {
   const [activeTab, setActiveTab] = useState<'pos' | 'orders'>('pos')
   const [orders, setOrders] = useState<Order[]>([])
   const [orderFilter, setOrderFilter] = useState<OrderStatus | 'all'>('all')
+  const [showLowStock, setShowLowStock] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const tryParse = (key: string, fallback: any) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback } catch { return fallback } }
@@ -104,10 +106,14 @@ export default function POS() {
   }
 
   const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase())
+    const q = search.toLowerCase()
+    const matchesSearch = p.name.toLowerCase().includes(q) || (p.barcode ?? '').toLowerCase().includes(q)
     const matchesCategory = !selectedCategory || p.category_id === selectedCategory
     return matchesSearch && matchesCategory && p.stock_quantity > 0
   })
+
+  const lowStockProducts = products.filter(p => p.stock_quantity <= p.min_stock)
+  const isBrowsing = search.trim().length > 0 || selectedCategory !== ''
 
   const openWeightDialog = (product: Product) => {
     setSelectedProduct(product)
@@ -120,6 +126,44 @@ export default function POS() {
     setPreparation(prepOptions[0])
     setShowWeightDialog(true)
   }
+
+  // Leitor de código de barras USB (emula teclado): dígitos digitados muito
+  // depressa seguidos de Enter. Se o intervalo entre teclas ultrapassar
+  // SCAN_MAX_GAP_MS, assume-se escrita humana normal e o buffer é limpo —
+  // por isso só actua sobre sequências rápidas, nunca sobre digitação manual.
+  useEffect(() => {
+    if (activeTab !== 'pos') return
+    let buffer = ''
+    let lastTime = 0
+    const SCAN_MAX_GAP_MS = 50
+    const MIN_BARCODE_LENGTH = 4
+
+    const handleScannerInput = (e: KeyboardEvent) => {
+      const now = Date.now()
+      if (now - lastTime > SCAN_MAX_GAP_MS) buffer = ''
+      lastTime = now
+
+      if (e.key === 'Enter') {
+        const code = buffer.trim()
+        buffer = ''
+        if (code.length < MIN_BARCODE_LENGTH) return
+        const match = products.find(p => p.barcode && p.barcode === code)
+        if (!match) return
+        e.preventDefault()
+        if (match.stock_quantity <= 0) {
+          toast.error(`${match.name} sem stock`)
+          return
+        }
+        openWeightDialog(match)
+        toast.success(`📷 ${match.name}`)
+        return
+      }
+      if (e.key.length === 1) buffer += e.key
+    }
+
+    window.addEventListener('keydown', handleScannerInput)
+    return () => window.removeEventListener('keydown', handleScannerInput)
+  }, [products, activeTab])
 
   const addToCart = () => {
     if (!selectedProduct) return
@@ -145,6 +189,7 @@ export default function POS() {
     }
     setShowWeightDialog(false)
     toast.success(`${selectedProduct.name} adicionado!`)
+    searchInputRef.current?.focus()
   }
 
   const removeFromCart = (idx: number) => {
@@ -435,10 +480,12 @@ export default function POS() {
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
               <input
+                ref={searchInputRef}
                 type="text"
-                placeholder="Buscar produtos..."
+                placeholder="Buscar produtos ou ler código de barras..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
+                autoFocus
                 className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-cyan-500"
               />
             </div>
@@ -455,67 +502,142 @@ export default function POS() {
           </div>
         </div>
 
-        {/* Products */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 overflow-y-auto flex-1">
-          {filteredProducts.map(product => (
+        {/* Alerta de Stock Baixo */}
+        {lowStockProducts.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-xl mb-4">
             <button
-              key={product.id}
-              onClick={() => openWeightDialog(product)}
-              className="bg-white rounded-xl shadow-lg p-4 hover:shadow-xl transition text-left"
+              onClick={() => setShowLowStock(v => !v)}
+              className="w-full flex items-center justify-between p-3 text-left"
             >
-              <div className="h-20 bg-gradient-to-br from-cyan-100 to-blue-100 rounded-lg flex items-center justify-center text-4xl mb-2">
-                🐟
-              </div>
-              <h3 className="font-bold text-sm truncate">{product.name}</h3>
-              {product.discount ? (
-                <div>
-                  <p className="text-xs text-gray-400 line-through">{Number(product.price).toLocaleString('pt-AO')}</p>
-                  <p className="text-green-600 font-bold text-sm">{effectivePrice(product).toLocaleString('pt-AO')} AOA/kg <span className="text-xs bg-green-100 text-green-700 px-1 rounded">-{product.discount}%</span></p>
-                </div>
-              ) : (
-                <p className="text-cyan-600 font-bold">{Number(product.price).toLocaleString('pt-AO')} AOA/kg</p>
-              )}
-              <p className="text-xs text-gray-500">Stock: {product.stock_quantity}kg</p>
+              <span className="flex items-center gap-2 text-red-700 font-bold text-sm">
+                <AlertTriangle className="w-4 h-4" />
+                {lowStockProducts.length} produto{lowStockProducts.length > 1 ? 's' : ''} com stock baixo
+              </span>
+              <span className="text-red-500 text-xs">{showLowStock ? 'Esconder' : 'Ver'}</span>
             </button>
-          ))}
+            {showLowStock && (
+              <div className="px-3 pb-3 space-y-1">
+                {lowStockProducts.map(p => (
+                  <div key={p.id} className="flex justify-between text-xs text-red-700 bg-white rounded-lg px-3 py-2">
+                    <span>{p.name}</span>
+                    <span className="font-bold">{p.stock_quantity} / mín. {p.min_stock} {p.unit}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Products — tabela estilo documento (inspirada no editor de vendas PRIMAVERA).
+            Fica oculta por omissão: só aparece depois de procurar por nome, ler o
+            código de barras, ou escolher uma categoria — tal como o Primavera não
+            mostra um catálogo, só a tabela do documento a preencher-se. */}
+        {!isBrowsing ? (
+          <div className="flex-1 rounded-xl shadow-lg bg-white border border-gray-200 flex flex-col items-center justify-center text-center p-10 text-gray-400">
+            <Search className="w-10 h-10 mb-3 opacity-30" />
+            <p className="font-medium">Procure um produto por nome, leia o código de barras, ou escolha uma categoria</p>
+          </div>
+        ) : (
+        <div className="flex-1 overflow-y-auto rounded-xl shadow-lg bg-white border border-gray-200">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-gray-50 text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-gray-200 z-10">
+              <tr>
+                <th className="text-left p-3">Artigo</th>
+                <th className="text-left p-3 hidden md:table-cell">Cód. Barras</th>
+                <th className="text-right p-3">Preço</th>
+                <th className="text-right p-3 hidden sm:table-cell">Stock</th>
+                <th className="p-3 w-14"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredProducts.length === 0 && (
+                <tr><td colSpan={5} className="p-8 text-center text-gray-400 text-sm">Nenhum produto encontrado</td></tr>
+              )}
+              {filteredProducts.map((product, i) => (
+                <tr
+                  key={product.id}
+                  onClick={() => openWeightDialog(product)}
+                  className={`cursor-pointer border-b border-gray-100 hover:bg-cyan-100 transition ${i % 2 === 1 ? 'bg-cyan-50/70' : 'bg-white'} ${product.stock_quantity <= product.min_stock ? 'bg-red-50' : ''}`}
+                >
+                  <td className="p-3 font-semibold text-gray-800">
+                    {product.name}
+                    {product.stock_quantity <= product.min_stock && (
+                      <span className="ml-2 inline-flex items-center gap-1 text-[10px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded-full font-bold align-middle">
+                        <AlertTriangle className="w-2.5 h-2.5" /> Baixo
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-3 text-xs text-gray-400 hidden md:table-cell">{product.barcode || '—'}</td>
+                  <td className="p-3 text-right">
+                    {product.discount ? (
+                      <div>
+                        <p className="text-xs text-gray-400 line-through leading-tight">{Number(product.price).toLocaleString('pt-AO')}</p>
+                        <p className="text-green-600 font-bold leading-tight">{effectivePrice(product).toLocaleString('pt-AO')} <span className="text-[10px] bg-green-100 text-green-700 px-1 rounded">-{product.discount}%</span></p>
+                      </div>
+                    ) : (
+                      <span className="text-cyan-700 font-bold">{Number(product.price).toLocaleString('pt-AO')} AOA/kg</span>
+                    )}
+                  </td>
+                  <td className="p-3 text-right text-gray-500 hidden sm:table-cell">{product.stock_quantity}kg</td>
+                  <td className="p-3 text-center">
+                    <span className="inline-flex w-7 h-7 rounded-full bg-cyan-50 text-cyan-600 items-center justify-center font-bold border border-cyan-200">+</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
+        )}
       </div>
 
-      {/* Cart Sidebar */}
-      <div className="lg:w-96 bg-white rounded-xl shadow-lg flex flex-col">
-        <div className="p-4 border-b">
-          <h3 className="font-bold flex items-center gap-2">
-            <Receipt className="w-5 h-5" /> Venda Atual
+      {/* Cart Sidebar — painel de venda estilo documento, com total em destaque */}
+      <div className="lg:w-96 bg-white rounded-xl shadow-lg flex flex-col overflow-hidden border border-gray-200">
+        <div className="p-4 border-b border-gray-200">
+          <h3 className="font-bold flex items-center gap-2 text-sm text-gray-500 uppercase tracking-wide">
+            <Receipt className="w-4 h-4" /> Venda Atual
           </h3>
+          <p className="text-4xl font-black mt-1 tracking-tight text-gray-800">
+            {cartTotal.toLocaleString('pt-AO')} <span className="text-lg font-bold text-cyan-600">AOA</span>
+          </p>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 overflow-y-auto">
           {cart.length === 0 ? (
             <p className="text-center text-gray-500 py-8">Adicione produtos</p>
           ) : (
-            <div className="space-y-3">
-              {cart.map((item, idx) => (
-                <div key={idx} className="bg-gray-50 rounded-lg p-3">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="font-medium">{item.name}</p>
-                      <p className="text-xs text-gray-500 capitalize">{item.preparation} • {item.weight}kg</p>
-                    </div>
-                    <button onClick={() => removeFromCart(idx)} className="text-red-500">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <div className="flex justify-between items-center mt-2">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => updateQuantity(idx, -1)} className="w-9 h-9 sm:w-7 sm:h-7 bg-gray-200 rounded-full text-lg font-bold flex items-center justify-center">-</button>
-                      <span className="text-sm">{item.quantity}x</span>
-                      <button onClick={() => updateQuantity(idx, 1)} className="w-9 h-9 sm:w-7 sm:h-7 bg-gray-200 rounded-full text-lg font-bold flex items-center justify-center">+</button>
-                    </div>
-                    <span className="font-bold">{Number(item.weight * item.price * item.quantity).toLocaleString('pt-AO')} AOA</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-gray-50 text-[10px] font-bold text-gray-400 uppercase tracking-wide border-b border-gray-200">
+                <tr>
+                  <th className="text-left p-2">Artigo</th>
+                  <th className="text-right p-2">Qtd.</th>
+                  <th className="text-right p-2">Total</th>
+                  <th className="p-2 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {cart.map((item, idx) => (
+                  <tr key={idx} className={`border-b border-gray-100 ${idx % 2 === 1 ? 'bg-cyan-50/60' : ''}`}>
+                    <td className="p-2 align-top">
+                      <p className="font-semibold text-gray-800">{item.name}</p>
+                      <p className="text-gray-400 capitalize">{item.preparation} • {item.weight}kg</p>
+                    </td>
+                    <td className="p-2 align-top text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => updateQuantity(idx, -1)} className="w-6 h-6 bg-gray-200 rounded-full text-sm font-bold flex items-center justify-center shrink-0">-</button>
+                        <span>{item.quantity}x</span>
+                        <button onClick={() => updateQuantity(idx, 1)} className="w-6 h-6 bg-gray-200 rounded-full text-sm font-bold flex items-center justify-center shrink-0">+</button>
+                      </div>
+                    </td>
+                    <td className="p-2 align-top text-right font-bold whitespace-nowrap">{Number(item.weight * item.price * item.quantity).toLocaleString('pt-AO')}</td>
+                    <td className="p-2 align-top text-center">
+                      <button onClick={() => removeFromCart(idx)} className="text-red-400 hover:text-red-600">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
 
@@ -662,22 +784,32 @@ export default function POS() {
 
       {/* Weight Dialog */}
       {showWeightDialog && selectedProduct && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-xl">{selectedProduct.name}</h3>
-              <button onClick={() => setShowWeightDialog(false)}><X className="w-6 h-6" /></button>
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-md">
+            <div className="flex justify-between items-center mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-cyan-100 to-blue-100 flex items-center justify-center text-2xl shrink-0">
+                  🐟
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg leading-tight">{selectedProduct.name}</h3>
+                  <p className="text-xs text-gray-400">{Number(selectedProduct.price).toLocaleString('pt-AO')} AOA/kg · Stock: {selectedProduct.stock_quantity}kg</p>
+                </div>
+              </div>
+              <button onClick={() => setShowWeightDialog(false)} className="w-8 h-8 rounded-full flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition shrink-0">
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
-                <label className="block text-sm font-medium mb-2">Peso (kg)</label>
-                <div className="flex items-center gap-4">
+                <label className="block text-sm font-semibold text-gray-600 mb-2">Peso (kg)</label>
+                <div className="flex items-center gap-3">
                   <button
                     onClick={() => setWeight(Math.max(0.1, parseFloat((weight - 0.1).toFixed(2))))}
-                    className="w-12 h-12 bg-gray-100 rounded-lg text-2xl font-bold"
+                    className="w-12 h-12 bg-gray-100 hover:bg-gray-200 rounded-full text-2xl font-bold text-gray-600 flex items-center justify-center shrink-0 transition active:scale-95"
                   >
-                    -
+                    −
                   </button>
                   <input
                     type="number"
@@ -685,53 +817,61 @@ export default function POS() {
                     onChange={e => setWeight(Math.max(0.1, parseFloat(parseFloat(e.target.value).toFixed(2)) || 0.1))}
                     step="0.1"
                     min="0.1"
-                    className="flex-1 text-center text-3xl font-bold border-2 border-cyan-600 rounded-lg py-2"
+                    autoFocus
+                    onFocus={e => e.target.select()}
+                    className="flex-1 min-w-0 w-full text-center text-3xl font-bold border-2 border-cyan-500 rounded-2xl py-2.5 focus:outline-none focus:ring-4 focus:ring-cyan-100 transition"
                   />
                   <button
                     onClick={() => setWeight(parseFloat((weight + 0.1).toFixed(2)))}
-                    className="w-12 h-12 bg-gray-100 rounded-lg text-2xl font-bold"
+                    className="w-12 h-12 bg-gray-100 hover:bg-gray-200 rounded-full text-2xl font-bold text-gray-600 flex items-center justify-center shrink-0 transition active:scale-95"
                   >
                     +
                   </button>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Tipo de Preparo</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { key: 'inteiro', label: 'Inteiro', available: selectedProduct.allow_whole },
-                    { key: 'limpo', label: 'Limpo', available: selectedProduct.allow_clean },
-                    { key: 'filé', label: 'Filé', available: selectedProduct.allow_fillet },
-                    { key: 'posta', label: 'Posta', available: selectedProduct.allow_steak },
-                  ].filter(o => o.available).map(o => (
-                    <button
-                      key={o.key}
-                      onClick={() => setPreparation(o.key as PreparationType)}
-                      className={`p-3 rounded-lg font-medium ${preparation === o.key ? 'bg-cyan-600 text-white' : 'bg-gray-100'}`}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              {(() => {
+                const formatOptions = [
+                  { key: 'inteiro' as PreparationType, label: 'Inteiro', available: selectedProduct.allow_whole },
+                  { key: 'limpo' as PreparationType, label: 'Limpo', available: selectedProduct.allow_clean },
+                  { key: 'filé' as PreparationType, label: 'Filé', available: selectedProduct.allow_fillet },
+                  { key: 'posta' as PreparationType, label: 'Posta', available: selectedProduct.allow_steak },
+                ].filter(o => o.available)
+                if (formatOptions.length <= 1) return null
+                return (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-600 mb-2">Tipo de Preparo</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {formatOptions.map(o => (
+                        <button
+                          key={o.key}
+                          onClick={() => setPreparation(o.key)}
+                          className={`py-3 rounded-xl font-semibold transition ${preparation === o.key ? 'bg-cyan-600 text-white shadow-md shadow-cyan-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                        >
+                          {o.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
 
-              <div className="bg-cyan-50 p-4 rounded-lg text-center">
-                <p className="text-sm text-gray-600">Total</p>
+              <div className="bg-gradient-to-br from-cyan-50 to-blue-50 border border-cyan-100 p-4 rounded-2xl text-center">
+                <p className="text-xs font-semibold text-cyan-700/70 uppercase tracking-wide">Total</p>
                 {selectedProduct.discount ? (
                   <div>
                     <p className="text-sm text-gray-400 line-through">{Number(selectedProduct.price * weight).toLocaleString('pt-AO')} AOA</p>
-                    <p className="text-3xl font-bold text-green-600">{Number(effectivePrice(selectedProduct) * weight).toLocaleString('pt-AO')} AOA</p>
-                    <p className="text-xs text-green-500">Desconto {selectedProduct.discount}% aplicado</p>
+                    <p className="text-3xl font-black text-green-600 mt-0.5">{Number(effectivePrice(selectedProduct) * weight).toLocaleString('pt-AO')} AOA</p>
+                    <p className="text-xs text-green-500 font-medium">Desconto {selectedProduct.discount}% aplicado</p>
                   </div>
                 ) : (
-                  <p className="text-3xl font-bold text-cyan-600">{Number(selectedProduct.price * weight).toLocaleString('pt-AO')} AOA</p>
+                  <p className="text-3xl font-black text-cyan-700 mt-0.5">{Number(selectedProduct.price * weight).toLocaleString('pt-AO')} AOA</p>
                 )}
               </div>
 
               <button
                 onClick={addToCart}
-                className="w-full bg-cyan-600 text-white py-3 rounded-lg font-bold hover:bg-cyan-700"
+                className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 text-white py-3.5 rounded-2xl font-bold tracking-wide hover:from-cyan-700 hover:to-blue-700 transition shadow-lg shadow-cyan-200 active:scale-[0.99]"
               >
                 ADICIONAR À VENDA
               </button>

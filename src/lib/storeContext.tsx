@@ -7,7 +7,9 @@
  * getCurrentStoreId() pode ser chamado em qualquer ficheiro sem hooks.
  */
 
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { toast } from 'sonner'
+import { supabase, isSupabaseReady } from './supabase'
 
 export interface StoreInfo {
   id: string
@@ -73,9 +75,47 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const clearStore = useCallback(() => {
+    // Tem de limpar os MESMOS dados de negócio que setStore() limpa ao trocar
+    // de loja — senão fica uma janela em que a loja activa é null mas os
+    // dados da loja anterior continuam em localStorage. Se a próxima loja
+    // seleccionada for a primeira (current === null), o guard em setStore()
+    // ("current && current.id !== s.id") nunca dispara, e a loja nova
+    // arranca a mostrar produtos/encomendas/caixa da loja anterior até o
+    // próximo pullAll() (que pode demorar ou falhar) os substituir.
+    BUSINESS_KEYS.forEach(k => localStorage.removeItem(k))
     localStorage.removeItem(LS_KEY)
     setStoreState(null)
   }, [])
+
+  // Confirma que a loja guardada localmente ainda existe mesmo no Supabase.
+  // Se tiver sido apagada noutro dispositivo (ex: "Restaurar Backup" ou
+  // "Reset Total"), os dados locais ficam a apontar para uma loja fantasma —
+  // toda a sincronização seguinte falhava silenciosamente com "violates
+  // foreign key constraint", sem se perceber porquê. Em vez de deixar
+  // acumular esses erros, desligamos a loja e mandamos escolher/criar outra.
+  useEffect(() => {
+    if (!store || !isSupabaseReady() || !supabase) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data, error } = await supabase!.from('stores').select('id').eq('id', store.id).maybeSingle()
+        if (cancelled) return
+        // Erro de rede/servidor — não assume que a loja desapareceu,
+        // só reage a uma resposta clara de "não encontrada".
+        if (error) return
+        if (!data) {
+          toast.error(
+            `A loja "${store.name}" já não existe no servidor (foi apagada noutro dispositivo). ` +
+            `Escolhe ou cria uma loja para continuar.`,
+            { duration: 10000 }
+          )
+          clearStore()
+        }
+      } catch { /* sem internet — não assume nada, mantém a loja local */ }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store?.id])
 
   return (
     <StoreContext.Provider value={{ store, setStore, clearStore }}>
