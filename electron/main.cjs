@@ -168,8 +168,9 @@ ipcMain.handle('deploy:all', async (event) => {
 // ── IPC: fila de envio offline (SQLite) ─────────────────────────────────────
 const localDb = require('./db.cjs')
 
-ipcMain.handle('db:upsertLocal', (_event, table, rows) => localDb.upsertLocal(table, rows))
-ipcMain.handle('db:deleteLocal', (_event, table, id) => localDb.deleteLocal(table, id))
+ipcMain.handle('db:upsertLocal', (_event, table, rows, storeId) => localDb.upsertLocal(table, rows, storeId))
+ipcMain.handle('db:deleteLocal', (_event, table, id, storeId) => localDb.deleteLocal(table, id, storeId))
+ipcMain.handle('db:adoptOrphans', (_event, storeId) => localDb.adoptOrphans(storeId))
 ipcMain.handle('db:getPendingOutbox', () => localDb.getPendingOutbox())
 ipcMain.handle('db:markSynced', (_event, ids) => localDb.markSynced(ids))
 

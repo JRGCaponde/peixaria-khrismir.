@@ -34,6 +34,14 @@ function getDb() {
       synced_at TEXT
     )
   `)
+  // Cada entrada da fila pertence a UMA loja — sem isto, o trabalho de uma loja
+  // era mostrado/enviado na loja que estivesse aberta a seguir.
+  try { db.exec('ALTER TABLE sync_outbox ADD COLUMN store_id TEXT') } catch { /* já existe */ }
+  // Entradas antigas: a loja vem do próprio registo, quando o tem.
+  db.exec(`
+    UPDATE sync_outbox SET store_id = json_extract(payload, '$.store_id')
+    WHERE store_id IS NULL AND payload IS NOT NULL AND json_extract(payload, '$.store_id') IS NOT NULL
+  `)
   // Armazém principal dos dados da app: uma linha por chave (ex: khrismir_products,
   // cf_movements) com o JSON completo. O SQLite é a fonte de verdade — no arranque
   // o preload copia daqui para o localStorage (cache de trabalho da app).
@@ -73,21 +81,55 @@ function kvSetMany(entries) {
   }
 }
 
-function upsertLocal(table, rows) {
+// Uma linha pendente ocupa uma só entrada: a mais recente. Só o último pedido
+// por linha conta (gravar/apagar), e sem isto cada gravação de produtos
+// re-enfileirava o catálogo inteiro e a fila crescia sem parar.
+function supersede(d, table, rowId, storeId) {
+  d.prepare(
+    `DELETE FROM sync_outbox WHERE synced_at IS NULL AND table_name = ? AND row_id = ? AND store_id IS ?`
+  ).run(table, rowId, storeId ?? null)
+}
+
+function upsertLocal(table, rows, storeId) {
   const d = getDb()
   const now = new Date().toISOString()
   const stmt = d.prepare(
-    `INSERT INTO sync_outbox (table_name, row_id, op, payload, created_at) VALUES (?, ?, 'upsert', ?, ?)`
+    `INSERT INTO sync_outbox (table_name, row_id, op, payload, created_at, store_id) VALUES (?, ?, 'upsert', ?, ?, ?)`
   )
-  for (const row of rows) stmt.run(table, String(row.id), JSON.stringify(row), now)
+  d.exec('BEGIN')
+  try {
+    for (const row of rows) {
+      supersede(d, table, String(row.id), storeId)
+      stmt.run(table, String(row.id), JSON.stringify(row), now, storeId ?? null)
+    }
+    d.exec('COMMIT')
+  } catch (e) { d.exec('ROLLBACK'); throw e }
 }
 
-function deleteLocal(table, id) {
+function deleteLocal(table, id, storeId) {
   const d = getDb()
   const now = new Date().toISOString()
+  supersede(d, table, String(id), storeId)
   d.prepare(
-    `INSERT INTO sync_outbox (table_name, row_id, op, payload, created_at) VALUES (?, ?, 'delete', NULL, ?)`
-  ).run(table, String(id), now)
+    `INSERT INTO sync_outbox (table_name, row_id, op, payload, created_at, store_id) VALUES (?, ?, 'delete', NULL, ?, ?)`
+  ).run(table, String(id), now, storeId ?? null)
+}
+
+/** Limpeza única das entradas antigas repetidas: fica só a mais recente de cada linha. */
+function compactPending() {
+  return getDb().prepare(`
+    DELETE FROM sync_outbox WHERE synced_at IS NULL AND id NOT IN (
+      SELECT MAX(id) FROM sync_outbox WHERE synced_at IS NULL GROUP BY table_name, row_id, store_id
+    )
+  `).run().changes
+}
+
+/** Migração: entradas antigas sem loja passam para a loja indicada (a que está aberta). */
+function adoptOrphans(storeId) {
+  if (!storeId) return 0
+  const n = getDb().prepare('UPDATE sync_outbox SET store_id = ? WHERE store_id IS NULL AND synced_at IS NULL').run(storeId).changes
+  if (n) compactPending() // entradas antigas repetidas: fica só a mais recente
+  return n
 }
 
 function getPendingOutbox() {
@@ -104,4 +146,4 @@ function markSynced(ids) {
   for (const id of ids) stmt.run(now, id)
 }
 
-module.exports = { upsertLocal, deleteLocal, getPendingOutbox, markSynced, kvGetAll, kvSetMany }
+module.exports = { upsertLocal, deleteLocal, adoptOrphans, getPendingOutbox, markSynced, kvGetAll, kvSetMany }

@@ -5,7 +5,7 @@
  */
 
 import { supabase, isSupabaseReady } from './supabase'
-import { getCurrentStoreId } from './storeContext'
+import { getCurrentStoreId, BUSINESS_KEYS } from './storeContext'
 import { isElectron, enqueueUpsert, enqueueDelete } from './localDB'
 import type { Order, Product, Category, CashFlow, Purchase, DeliveryZone, PromoCode } from '../types/database'
 import type { StoreSettings } from './settings'
@@ -30,16 +30,8 @@ function markDeleted(id: string) {
 }
 
 
-// Chaves de negócio isoladas por loja — limpas quando a loja muda
-const STORE_BUSINESS_KEYS = [
-  'khrismir_products', 'khrismir_categories', 'khrismir_orders',
-  'khrismir_cashflow', 'khrismir_purchases', 'khrismir_suppliers',
-  'khrismir_delivery_zones', 'khrismir_promos', 'khrismir_returns',
-  'khrismir_loyalty', 'khrismir_shifts', 'khrismir_settings',
-  'cf_movements', 'cf_accounts', 'cf_categories', 'cf_deleted_ids',
-  'khrismir_accounts', 'khrismir_journal', 'khrismir_map_references',
-  'khrismir_auto_synced',
-]
+// Chaves de negócio isoladas por loja — limpas quando a loja muda (lista única, em storeContext)
+const STORE_BUSINESS_KEYS = BUSINESS_KEYS.filter(k => k !== 'khrismir_last_pull_store')
 const LAST_PULL_STORE_KEY = 'khrismir_last_pull_store'
 
 // ── PULL: Supabase → localStorage ─────────────────────────────
@@ -256,6 +248,11 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
+type OutboxEntry = {
+  id: number; table_name: string; row_id: string; op: 'upsert' | 'delete'
+  payload: any; store_id: string | null
+}
+
 // tabela da fila offline → chave do localStorage onde a app a lê
 const OUTBOX_LS_KEY: Record<string, string> = {
   products: 'khrismir_products', categories: 'khrismir_categories', orders: 'khrismir_orders',
@@ -276,9 +273,17 @@ const OUTBOX_LS_KEY: Record<string, string> = {
  */
 export async function applyPendingOutbox(): Promise<void> {
   if (!isElectron()) return
-  let pending: Array<{ id: number; table_name: string; row_id: string; op: 'upsert' | 'delete'; payload: any }>
-  try { pending = await (window as any).electronAPI.db.getPendingOutbox() } catch { return }
-  if (!pending?.length) return
+  const sid = getCurrentStoreId()
+  if (!sid) return
+  let pending: OutboxEntry[]
+  try {
+    // Entradas anteriores à separação por loja não têm dono: ficam com a loja aberta.
+    await (window as any).electronAPI.db.adoptOrphans(sid)
+    pending = await (window as any).electronAPI.db.getPendingOutbox()
+  } catch { return }
+  // Só o trabalho DESTA loja — o das outras lojas não pode aparecer aqui.
+  pending = (pending ?? []).filter(e => e.store_id === sid)
+  if (!pending.length) return
 
   // Estado final por tabela/linha (a fila vem ordenada por id).
   const last = new Map<string, typeof pending[number]>()
@@ -307,6 +312,10 @@ export async function applyPendingOutbox(): Promise<void> {
       if (idx >= 0) arr.splice(idx, 1)
     } else if (idx >= 0) {
       arr[idx] = { ...arr[idx], ...e.payload }
+    } else if (e.table_name === 'products' && arr.some(r => r.name === e.payload?.name)) {
+      // A loja só tem um produto por nome (unique name+store_id). São resíduos de
+      // importações que falharam por nome repetido — nunca chegaram a existir.
+      continue
     } else {
       arr.unshift(e.table_name === 'orders' ? { items: [], ...e.payload } : e.payload)
     }
@@ -1055,29 +1064,38 @@ export function isRlsError(msg: string): boolean {
 export async function drainOutbox(): Promise<void> {
   if (!isElectron() || draining) return
   if (!isSupabaseReady() || !supabase) return
-  const sid = getCurrentStoreId()
-  if (!sid) return
   if (!(await hasCloudSession())) return // espera por uma sessão real; a fila fica guardada
 
   draining = true
   try {
-    const pending: Array<{ id: number; table_name: string; row_id: string; op: 'upsert' | 'delete'; payload: any }> =
-      await (window as any).electronAPI.db.getPendingOutbox()
+    const current = getCurrentStoreId()
+    if (current) await (window as any).electronAPI.db.adoptOrphans(current) // entradas antigas, sem loja
+    const pending: OutboxEntry[] = await (window as any).electronAPI.db.getPendingOutbox()
     if (!pending.length) return
 
     const synced: number[] = []
     for (const entry of pending) {
+      // Cada entrada vai para a loja a que pertence — nunca para a que está aberta agora.
+      const entrySid = entry.store_id
+      if (!entrySid) continue
       // cf_accounts/cf_categories/cf_movements guardam a linha em bruto (precisa de
       // mapear para o formato do Supabase); as restantes tabelas já guardam a linha
       // pronta a enviar (foi construída antes de ser enfileirada), usa-se tal e qual.
       const mapRow = UPSERT_MAP[entry.table_name]
-      const row = mapRow ? mapRow(entry.payload, sid) : entry.payload
+      const row = mapRow ? mapRow(entry.payload, entrySid) : { ...entry.payload, store_id: entry.payload?.store_id ?? entrySid }
 
       const { error } = entry.op === 'delete'
         ? await supabase.from(entry.table_name).delete().eq('id', entry.row_id)
         : await supabase.from(entry.table_name).upsert(row, { onConflict: 'id' })
 
       if (error) {
+        if (error.code === '23505') {
+          // Duplicado (ex: nome de produto repetido): nunca vai passar, por mais que se
+          // repita. Descarta em vez de ficar preso na fila para sempre.
+          console.warn(`[drainOutbox] ${entry.table_name}/${entry.row_id} descartado (duplicado):`, error.message)
+          synced.push(entry.id)
+          continue
+        }
         console.error(`[drainOutbox] ${entry.table_name}/${entry.op}`, error.message)
         continue // fica na fila, tenta-se outra vez na próxima passagem
       }

@@ -44,13 +44,20 @@ function loadFromLS(): StoreInfo | null {
   catch { return null }
 }
 
-// Chaves de negócio a limpar quando a loja muda (dados isolados por loja)
-const BUSINESS_KEYS = [
+// Dados de negócio de UMA loja, a limpar sempre que a loja muda. Esta é a lista
+// única (sync.ts usa-a também): só entram aqui dados que voltam da nuvem no
+// pullAll() ou que são descartáveis (carrinho em curso) — nunca configuração
+// que só existe neste dispositivo (contadores de facturas, AGT, utilizadores).
+export const BUSINESS_KEYS = [
   'khrismir_products', 'khrismir_categories', 'khrismir_orders',
   'khrismir_cashflow', 'khrismir_purchases', 'khrismir_suppliers',
   'khrismir_delivery_zones', 'khrismir_promos', 'khrismir_returns',
   'khrismir_loyalty', 'khrismir_shifts', 'khrismir_settings',
   'cf_movements', 'cf_accounts', 'cf_categories',
+  'khrismir_accounts', 'khrismir_journal',          // contabilidade
+  'khrismir_map_references', 'khrismir_profiles',   // mapa de entregas, equipa da loja
+  'khrismir_pos_cart',       // carrinho do PDV em curso
+  'khrismir_last_pull_store',
   'cf_deleted_ids',          // tombstone — recomeça para a nova loja
   'khrismir_auto_synced',    // força re-push dos dados da nova loja
 ]

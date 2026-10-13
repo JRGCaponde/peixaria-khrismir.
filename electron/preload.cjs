@@ -72,8 +72,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * continuar a funcionar sem internet. Ver electron/db.cjs.
    */
   db: {
-    upsertLocal: (table, rows) => ipcRenderer.invoke('db:upsertLocal', table, rows),
-    deleteLocal: (table, id) => ipcRenderer.invoke('db:deleteLocal', table, id),
+    upsertLocal: (table, rows, storeId) => ipcRenderer.invoke('db:upsertLocal', table, rows, storeId),
+    deleteLocal: (table, id, storeId) => ipcRenderer.invoke('db:deleteLocal', table, id, storeId),
+    adoptOrphans: (storeId) => ipcRenderer.invoke('db:adoptOrphans', storeId),
     getPendingOutbox: () => ipcRenderer.invoke('db:getPendingOutbox'),
     markSynced: (ids) => ipcRenderer.invoke('db:markSynced', ids),
     /** Grava chaves no armazém principal (value null apaga). Ver lib/sqliteMirror.ts */
