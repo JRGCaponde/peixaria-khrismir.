@@ -240,6 +240,10 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       }
     }
 
+    // Reaplica por cima da nuvem o que ainda está na fila offline por enviar —
+    // senão o pull acima "apagava do ecrã" o trabalho feito sem sessão online.
+    await applyPendingOutbox()
+
     // Notifica todos os componentes que os dados foram actualizados
     window.dispatchEvent(new CustomEvent('khrismir:sync', { detail: { table: 'pullAll' } }))
 
@@ -250,6 +254,64 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   } catch (e: any) {
     return { ok: false, error: e.message }
   }
+}
+
+// tabela da fila offline → chave do localStorage onde a app a lê
+const OUTBOX_LS_KEY: Record<string, string> = {
+  products: 'khrismir_products', categories: 'khrismir_categories', orders: 'khrismir_orders',
+  purchases: 'khrismir_purchases', suppliers: 'khrismir_suppliers', shift_sessions: 'khrismir_shifts',
+  delivery_zones: 'khrismir_delivery_zones', promo_codes: 'khrismir_promos',
+  returns: 'khrismir_returns', loyalty_transactions: 'khrismir_loyalty',
+  cf_accounts: 'cf_accounts', cf_categories: 'cf_categories', cf_movements: 'cf_movements',
+  accounting_accounts: 'khrismir_accounts', journal_entries: 'khrismir_journal',
+  map_references: 'khrismir_map_references',
+}
+
+/**
+ * Electron: o pullAll() substitui os dados locais pelos da nuvem. Tudo o que foi
+ * escrito mas ainda não chegou ao Supabase (fila sync_outbox — por falta de
+ * internet ou de sessão online) desaparecia do ecrã a cada arranque. Esta função
+ * volta a aplicar a fila por cima: o último pedido de cada linha vence
+ * (gravar = inserir/actualizar, apagar = remover).
+ */
+export async function applyPendingOutbox(): Promise<void> {
+  if (!isElectron()) return
+  let pending: Array<{ id: number; table_name: string; row_id: string; op: 'upsert' | 'delete'; payload: any }>
+  try { pending = await (window as any).electronAPI.db.getPendingOutbox() } catch { return }
+  if (!pending?.length) return
+
+  // Estado final por tabela/linha (a fila vem ordenada por id).
+  const last = new Map<string, typeof pending[number]>()
+  for (const e of pending) last.set(`${e.table_name}\u0000${e.row_id}`, e)
+
+  const arrays = new Map<string, any[]>()
+  const load = (key: string) => {
+    if (!arrays.has(key)) arrays.set(key, ls<any[]>(key, []))
+    return arrays.get(key)!
+  }
+
+  for (const e of last.values()) {
+    if (e.table_name === 'order_items') {
+      // os itens vivem dentro da encomenda (campo items)
+      const orders = load('khrismir_orders')
+      const order = orders.find(o => o.id === e.payload?.order_id)
+      if (!order || e.op === 'delete') continue
+      order.items = [...(order.items ?? []).filter((i: any) => i.id !== e.row_id), e.payload]
+      continue
+    }
+    const key = OUTBOX_LS_KEY[e.table_name]
+    if (!key) continue // tabelas sem cópia em array (stores, store_settings) tratam-se à parte
+    const arr = load(key)
+    const idx = arr.findIndex(r => r.id === e.row_id)
+    if (e.op === 'delete') {
+      if (idx >= 0) arr.splice(idx, 1)
+    } else if (idx >= 0) {
+      arr[idx] = { ...arr[idx], ...e.payload }
+    } else {
+      arr.unshift(e.table_name === 'orders' ? { items: [], ...e.payload } : e.payload)
+    }
+  }
+  arrays.forEach((arr, key) => lsSet(key, arr))
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
