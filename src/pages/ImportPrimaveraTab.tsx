@@ -95,8 +95,33 @@ export default function ImportPrimaveraTab({ categories }: { categories: Categor
     if (!data) return
     setLoading(true)
     const sid = store?.id
+
+    // A loja só aceita um produto por nome (unique name+store_id). Cada importação
+    // gerava ids novos, por isso importar duas vezes — ou um ficheiro com dois
+    // produtos com o mesmo nome — rebentava com "duplicate key". Agora salta o que
+    // já existe (local ou na nuvem) e os nomes repetidos dentro do próprio ficheiro,
+    // sem tocar nos preços/stock que já tens.
+    const existingNames = new Set<string>()
+    try {
+      const local: Product[] = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
+      local.forEach(p => existingNames.add(p.name))
+    } catch { /* non-fatal */ }
+    if (isSupabaseReady() && supabase && sid) {
+      try {
+        const { data: cloud } = await supabase.from('products').select('name').eq('store_id', sid)
+        cloud?.forEach((p: any) => existingNames.add(p.name))
+      } catch { /* sem ligação — a cache local já cobre o essencial */ }
+    }
+    let jaExistiam = 0
+
     const prods: Product[] = data.produtos
       .filter(p => selectedProds.has(p.code))
+      .filter(p => {
+        const name = p.name || p.code
+        if (existingNames.has(name)) { jaExistiam++; return false }
+        existingNames.add(name) // o seguinte com o mesmo nome no ficheiro é repetido
+        return true
+      })
       .map(p => {
         const cost = p.cost_price > 0 ? p.cost_price : (p.last_cost > 0 ? p.last_cost : 0)
         const price = manualPrices[p.code] ?? Math.round(cost * priceMultiplier)
@@ -118,6 +143,10 @@ export default function ImportPrimaveraTab({ categories }: { categories: Categor
         } as unknown as Product
       })
     try {
+      if (!prods.length) {
+        toast.info(`Nada para importar: os ${jaExistiam} produtos seleccionados já existem na loja.`)
+        return
+      }
       const result = await syncProducts(prods)
       if (!result.ok) {
         toast.error(`Erro ao importar produtos: ${result.error ?? 'erro desconhecido'}`)
@@ -125,7 +154,10 @@ export default function ImportPrimaveraTab({ categories }: { categories: Categor
       }
       await pullAll()
       setDone(d => ({ ...d, products: prods.length }))
-      toast.success(`${prods.length} produtos importados!`)
+      toast.success(
+        `${prods.length} produtos importados!` +
+        (jaExistiam ? ` ${jaExistiam} já existiam e ficaram como estavam.` : '')
+      )
     } catch (err: any) {
       toast.error('Erro ao importar produtos: ' + (err?.message ?? 'verifique a ligação'))
     } finally {
