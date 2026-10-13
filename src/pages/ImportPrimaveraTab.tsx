@@ -176,12 +176,23 @@ export default function ImportPrimaveraTab({ categories }: { categories: Categor
       .from('clients')
       .select('company_name, tax_id')
       .eq('store_id', sid)
-    const existingNames = new Set((existing ?? []).map((r: any) => r.company_name).filter(Boolean))
+    // Compara sem maiúsculas/espaços a mais — o índice único da base de dados
+    // (clients_name_store_idx) não aceita "Silva Lda" e "silva lda " como diferentes.
+    const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, ' ')
+    const existingNames = new Set((existing ?? []).map((r: any) => r.company_name).filter(Boolean).map(norm))
     const existingNifs  = new Set((existing ?? []).map((r: any) => r.tax_id).filter(Boolean))
 
+    // Também descarta repetidos dentro do próprio ficheiro (o 2.º cliente com o mesmo
+    // nome ou NIF) — antes só se comparava com o que já estava na base.
     const rows = data.clientes
       .filter(c => selectedClients.has(c.code) && c.name)
-      .filter(c => !existingNames.has(c.name) && (!c.nif || !existingNifs.has(c.nif)))
+      .filter(c => {
+        const n = norm(c.name)
+        if (existingNames.has(n) || (c.nif && existingNifs.has(c.nif))) return false
+        existingNames.add(n)
+        if (c.nif) existingNifs.add(c.nif)
+        return true
+      })
       .map(c => ({
         store_id:       sid,
         full_name:      c.name,
@@ -199,13 +210,25 @@ export default function ImportPrimaveraTab({ categories }: { categories: Categor
       return
     }
 
+    let importados = rows.length
+    let ignorados = 0
     const { error } = await supabase.from('clients').insert(rows)
-    if (error) { toast.error('Erro ao importar clientes: ' + error.message); setLoading(false); return }
+    if (error && error.code === '23505') {
+      // Ainda houve um duplicado que não detectámos (ex: o índice compara de outra forma):
+      // em vez de falhar o lote todo, insere um a um e salta só os repetidos.
+      importados = 0
+      for (const row of rows) {
+        const { error: e1 } = await supabase.from('clients').insert(row)
+        if (!e1) importados++
+        else if (e1.code === '23505') ignorados++
+        else { toast.error('Erro ao importar clientes: ' + e1.message); setLoading(false); return }
+      }
+    } else if (error) { toast.error('Erro ao importar clientes: ' + error.message); setLoading(false); return }
     // Sem isto, os clientes ficavam só na cloud e não apareciam no app
     // até à próxima sincronização (que só acontece noutro ponto do app).
     await pullAll()
-    setDone(d => ({ ...d, clients: rows.length }))
-    toast.success(`${rows.length} clientes importados!`)
+    setDone(d => ({ ...d, clients: importados }))
+    toast.success(`${importados} clientes importados!` + (ignorados ? ` ${ignorados} já existiam e foram ignorados.` : ''))
     setLoading(false)
   }
 
