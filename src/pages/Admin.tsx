@@ -960,7 +960,48 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
   const [priceProduct, setPriceProduct] = useState<Product | null>(null)
   const [priceVal, setPriceVal]         = useState('')
   const [search, setSearch]             = useState('')
+  const [stockMode, setStockMode]       = useState(false)
+  const [stockDraft, setStockDraft]     = useState<Record<string, string>>({})
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const persistProducts = (updated: Product[]) => {
+    setProducts(updated)
+    localStorage.setItem('khrismir_products', JSON.stringify(updated))
+    syncProducts(updated)
+  }
+
+  const startStockEdit = () => {
+    setStockDraft(Object.fromEntries(products.map(p => [p.id, String(p.stock_quantity ?? 0)])))
+    setStockMode(true)
+  }
+
+  const saveStock = () => {
+    const invalid = products.find(p => {
+      const v = Number(stockDraft[p.id])
+      return stockDraft[p.id] === '' || !Number.isFinite(v) || v < 0
+    })
+    if (invalid) { toast.error(`Quantidade inválida em "${invalid.name}" — usa um número igual ou maior que 0`); return }
+    let changed = 0
+    const updated = products.map(p => {
+      const v = Number(stockDraft[p.id])
+      if (v === Number(p.stock_quantity ?? 0)) return p
+      changed++
+      return { ...p, stock_quantity: v }
+    })
+    setStockMode(false)
+    if (!changed) { toast.info('Nenhuma quantidade foi alterada'); return }
+    persistProducts(updated)
+    toast.success(`Stock actualizado em ${changed} produto(s)`)
+  }
+
+  const zeroAllStock = () => {
+    const comStock = products.filter(p => Number(p.stock_quantity) !== 0).length
+    if (!comStock) { toast.info('Todos os produtos já estão com stock 0'); return }
+    if (!confirm(`Zerar o stock de ${comStock} produto(s)? Preços, nomes e restantes dados ficam como estão.`)) return
+    persistProducts(products.map(p => ({ ...p, stock_quantity: 0 })))
+    setStockMode(false)
+    toast.success(`Stock zerado em ${comStock} produto(s)`)
+  }
 
   const openNew  = () => { setForm({ name: '', price: 0, category_id: '', unit: 'kg', min_stock: 5, allow_whole: true, allow_clean: false, allow_fillet: false, allow_steak: false, image_url: '' }); setEditing(null); setModal('new') }
   const openEdit = (p: Product) => { setForm({ ...p }); setEditing(p); setModal('edit') }
@@ -1050,11 +1091,44 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
               {lowStockList.length} em falta · WhatsApp
             </button>
           )}
-          <button onClick={openNew} className="bg-cyan-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium hover:bg-cyan-700 transition">
-            <Plus className="w-4 h-4" /> Novo Produto
-          </button>
+          {stockMode ? (
+            <>
+              <button onClick={() => setStockMode(false)}
+                className="border border-gray-300 text-gray-600 px-3 py-2 rounded-xl text-sm font-medium hover:bg-gray-50 transition">
+                Cancelar
+              </button>
+              <button onClick={zeroAllStock}
+                className="border border-red-300 text-red-600 px-3 py-2 rounded-xl text-sm font-medium hover:bg-red-50 transition">
+                Zerar tudo
+              </button>
+              <button onClick={saveStock}
+                className="bg-green-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-green-700 transition">
+                Guardar quantidades
+              </button>
+            </>
+          ) : (
+            <>
+              <button onClick={startStockEdit} disabled={products.length === 0}
+                className="border border-cyan-300 text-cyan-700 px-3 py-2 rounded-xl flex items-center gap-1.5 text-sm font-medium hover:bg-cyan-50 transition disabled:opacity-40">
+                <Edit className="w-4 h-4" /> Editar quantidades
+              </button>
+              <button onClick={zeroAllStock} disabled={products.length === 0}
+                className="border border-red-300 text-red-600 px-3 py-2 rounded-xl text-sm font-medium hover:bg-red-50 transition disabled:opacity-40">
+                Zerar stock
+              </button>
+              <button onClick={openNew} className="bg-cyan-600 text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-medium hover:bg-cyan-700 transition">
+                <Plus className="w-4 h-4" /> Novo Produto
+              </button>
+            </>
+          )}
         </div>
       </div>
+      {stockMode && (
+        <p className="mb-4 text-sm text-cyan-800 bg-cyan-50 border border-cyan-200 rounded-xl px-4 py-2">
+          Modo de edição de quantidades: escreve a nova quantidade de cada produto e carrega em <b>Guardar quantidades</b>.
+          {search.trim() && ' Os produtos fora da pesquisa também são guardados, com a quantidade que têm.'}
+        </p>
+      )}
       <div className="relative mb-4">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
         <input
@@ -1091,9 +1165,20 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
                     </div>
                   </td>
                   <td className="py-3">
-                    <span className={`px-2 py-1 rounded-lg text-xs font-bold ${p.stock_quantity <= p.min_stock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
-                      {p.stock_quantity} {p.unit}
-                    </span>
+                    {stockMode ? (
+                      <div className="flex items-center gap-2">
+                        <input type="number" min="0" step="any" inputMode="decimal"
+                          value={stockDraft[p.id] ?? ''}
+                          onChange={e => setStockDraft(d => ({ ...d, [p.id]: e.target.value }))}
+                          onFocus={e => e.target.select()}
+                          className="w-28 border border-cyan-300 rounded-lg px-2 py-1.5 text-sm font-semibold focus:ring-2 focus:ring-cyan-500 focus:outline-none" />
+                        <span className="text-xs text-gray-400">{p.unit}</span>
+                      </div>
+                    ) : (
+                      <span className={`px-2 py-1 rounded-lg text-xs font-bold ${p.stock_quantity <= p.min_stock ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-600'}`}>
+                        {p.stock_quantity} {p.unit}
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 text-right">
                     <div className="flex justify-end gap-1">
