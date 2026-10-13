@@ -187,6 +187,11 @@ export default function Admin() {
                 { duration: 12000 }
               )
             }
+            else if (isRlsError(msg)) {
+              // Há sessão online e mesmo assim a base recusa: é problema de permissões no
+              // Supabase, não de login. Mostra o estado da sessão para o diagnóstico.
+              toast.error(`A base de dados recusou a escrita mesmo com sessão online. ${msg}`, { duration: 15000 })
+            }
             else toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
           }
         }
