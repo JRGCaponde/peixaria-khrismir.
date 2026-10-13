@@ -968,11 +968,34 @@ const UPSERT_MAP: Record<string, (row: any, sid: string) => any> = {
 
 let draining = false
 
+/**
+ * Há uma sessão real do Supabase (conta registada na nuvem)? As tabelas internas
+ * (caixa, contabilidade, compras, turnos...) só aceitam upsert/update/delete de
+ * sessões autenticadas — com a conta local de recurso (sem sessão) o Supabase
+ * recusa com "row-level security policy". Sem sessão a fila espera, em vez de
+ * falhar a cada tentativa.
+ */
+export async function hasCloudSession(): Promise<boolean> {
+  if (!isSupabaseReady() || !supabase) return false
+  try {
+    const { data } = await supabase.auth.getSession()
+    return !!data.session
+  } catch {
+    return false
+  }
+}
+
+/** Erro de política RLS do Postgres: quase sempre significa "sem sessão da cloud". */
+export function isRlsError(msg: string): boolean {
+  return /row-level security|violates row-level|permission denied/i.test(msg)
+}
+
 export async function drainOutbox(): Promise<void> {
   if (!isElectron() || draining) return
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) return
+  if (!(await hasCloudSession())) return // espera por uma sessão real; a fila fica guardada
 
   draining = true
   try {

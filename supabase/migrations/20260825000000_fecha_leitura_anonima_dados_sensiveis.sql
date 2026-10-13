@@ -8,8 +8,17 @@
 -- "for all to anon, authenticated using (true)" (leitura + escrita) nestas
 -- tabelas.
 --
--- IMPORTANTE: esta migração só mexe na LEITURA (select). A ESCRITA continua
--- deliberadamente aberta a "anon", exactamente como a 20260811000000 já
+-- ATENÇÃO (corrigido depois de testar em produção): deixar a escrita aberta a
+-- "anon" NÃO chega para a app funcionar sem sessão. O Postgres exige permissão
+-- de LEITURA para INSERT ... ON CONFLICT (upsert), e para UPDATE/DELETE com
+-- WHERE id = ... — sem SELECT para "anon", só um INSERT simples passa. Na
+-- prática estas tabelas só são escritas por sessões autenticadas (conta real
+-- do Supabase); com a conta local de recurso o upsert falha com "new row
+-- violates row-level security policy". A app trata isso: a fila offline espera
+-- por uma sessão real e o Admin avisa em vez de mostrar um erro.
+--
+-- Intenção original (mantida nas políticas): esta migração só mexe na LEITURA
+-- (select) e deixa insert/update/delete formalmente abertos a "anon", como a 20260811000000 já
 -- explicava: a sincronização desta app é toda "faz-e-esquece" (sem esperar
 -- resultado nem mostrar erro se falhar) e a sessão Supabase já expirou a meio
 -- de turnos reais várias vezes — exigir sessão autenticada para ESCREVER

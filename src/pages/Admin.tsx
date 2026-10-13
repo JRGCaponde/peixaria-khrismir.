@@ -27,6 +27,7 @@ import {
   deleteProduct, deleteCategory, deletePromo,
   syncStore, deleteStorePermanent, syncLoyalty, syncReturns,
   syncMapReferences, deleteMapReference, getLocalStores, mergeCloudStores,
+  hasCloudSession, isRlsError,
 } from '../lib/sync'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
@@ -177,6 +178,15 @@ export default function Admin() {
             // sincronização inicial repete-se da próxima vez que o Admin abrir.
             const semLigacao = !navigator.onLine || /Failed to fetch|NetworkError|fetch failed|Load failed/i.test(msg)
             if (semLigacao) console.info('[autoSync] sem ligação — sincroniza quando houver internet')
+            else if (isRlsError(msg) && !(await hasCloudSession())) {
+              // Conta local (sem sessão da nuvem): o Supabase recusa escrever nas tabelas
+              // internas. Não é uma falha — é preciso entrar com uma conta online.
+              toast.warning(
+                'Os dados estão guardados neste dispositivo, mas não sincronizam com a nuvem porque a sessão é local. ' +
+                'Termina a sessão e entra com a tua conta online (registada no Supabase) para sincronizar.',
+                { duration: 12000 }
+              )
+            }
             else toast.error(`Erro na sincronização automática: ${msg}`, { duration: 10000 })
           }
         }
