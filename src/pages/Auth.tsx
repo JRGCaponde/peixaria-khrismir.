@@ -48,30 +48,39 @@ export default function Auth() {
 
     // ── Via Supabase ──
     if (isSupabaseReady() && supabase) {
-      const { data, error } = await supabase.auth.signUp({
-        email: form.email,
-        password: form.password,
-        options: { data: { full_name: form.name || 'Cliente', phone: form.phone || '', role: 'client' } },
-      })
-      if (error) { toast.error(error.message); return }
-      // Inserir perfil imediatamente (o trigger faz o mesmo, mas esta linha garante mesmo sem trigger)
-      if (data.user) {
-        await supabase.from('profiles').upsert({
-          id: data.user.id,
+      let signUp: Awaited<ReturnType<typeof supabase.auth.signUp>> | null = null
+      try {
+        signUp = await supabase.auth.signUp({
           email: form.email,
-          full_name: form.name || 'Cliente',
-          phone: form.phone || '',
-          role: 'client',
-          created_at: new Date().toISOString(),
-        }, { onConflict: 'id' })
+          password: form.password,
+          options: { data: { full_name: form.name || 'Cliente', phone: form.phone || '', role: 'client' } },
+        })
+      } catch { /* sem ligação — cai para o registo local abaixo */ }
+      // Sem internet o pedido falha; a app tem de funcionar offline, por isso a conta
+      // cria-se neste dispositivo em vez de ficar por criar.
+      const semLigacao = !signUp || /Failed to fetch|NetworkError|fetch failed|Load failed/i.test(signUp.error?.message ?? '')
+      if (!semLigacao) {
+        const { data, error } = signUp!
+        if (error) { toast.error(error.message); return }
+        // Inserir perfil imediatamente (o trigger faz o mesmo, mas esta linha garante mesmo sem trigger)
+        if (data.user) {
+          await supabase.from('profiles').upsert({
+            id: data.user.id,
+            email: form.email,
+            full_name: form.name || 'Cliente',
+            phone: form.phone || '',
+            role: 'client',
+            created_at: new Date().toISOString(),
+          }, { onConflict: 'id' })
+        }
+        toast.success('Conta criada! Faça login.')
+        setView('login')
+        setForm(f => ({ ...f, password: '', name: '', phone: '' }))
+        return
       }
-      toast.success('Conta criada! Faça login.')
-      setView('login')
-      setForm(f => ({ ...f, password: '', name: '', phone: '' }))
-      return
     }
 
-    // ── Via localStorage ──
+    // ── Via localStorage (sem Supabase configurado, ou sem internet) ──
     const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
     if (clients.find((c: any) => c.email.toLowerCase() === form.email.toLowerCase())) {
       toast.error('Este email já está cadastrado'); return
@@ -86,7 +95,11 @@ export default function Auth() {
       created_at: new Date().toISOString(),
     }
     localStorage.setItem('khrismir_clients', JSON.stringify([...clients, newClient]))
-    toast.success('Conta criada! Faça login.')
+    toast.success(
+      isSupabaseReady()
+        ? 'Sem internet: conta criada neste dispositivo. Faça login.'
+        : 'Conta criada! Faça login.'
+    )
     setView('login')
     setForm(f => ({ ...f, password: '', name: '', phone: '' }))
   }
