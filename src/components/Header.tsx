@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react'
 import { toast } from 'sonner'
 import { getPendingOrderCount, startOrderPolling, requestNotificationPermission } from '../lib/notifications'
 import { useStore } from '../lib/storeContext'
+import CloudStatus from './CloudStatus'
 import type { Product } from '../types/database'
 
 // Lê o stock baixo directamente do localStorage — visível a toda a
@@ -129,6 +130,7 @@ export default function Header() {
                       </button>
                     )
                   )}
+                  {user?.role !== 'client' && <CloudStatus />}
                   {/* Botão mudar loja (super_admin ou staff com acesso a múltiplas lojas) */}
                   {store && user?.role !== 'client' && (
                     <button
@@ -212,6 +214,9 @@ export default function Header() {
                   </>
                 )}
                 <div className="border-t border-white/20 mt-2 pt-2">
+                  {user?.role !== 'client' && (
+                    <div className="px-3 py-2"><CloudStatus compact /></div>
+                  )}
                   <div className="flex items-center gap-2 px-3 py-2 text-sm text-cyan-100">
                     <User className="w-4 h-4" />
                     <span>{user?.full_name}</span>

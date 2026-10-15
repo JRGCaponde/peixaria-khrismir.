@@ -176,7 +176,7 @@ export default function Admin() {
             const msg = erros.length ? erros.join(' | ') : (result.error ?? 'Erro desconhecido')
             // Falta de ligação não é um erro: a app funciona offline e a
             // sincronização inicial repete-se da próxima vez que o Admin abrir.
-            const semLigacao = !navigator.onLine || /Failed to fetch|NetworkError|fetch failed|Load failed/i.test(msg)
+            const semLigacao = !navigator.onLine || /Failed to fetch|NetworkError|fetch failed|Load failed|Sem ligação/i.test(msg)
             if (semLigacao) console.info('[autoSync] sem ligação — sincroniza quando houver internet')
             else if (isRlsError(msg) && !(await hasCloudSession())) {
               // Conta local (sem sessão da nuvem): o Supabase recusa escrever nas tabelas

@@ -7,6 +7,7 @@
 import { supabase, isSupabaseReady } from './supabase'
 import { getCurrentStoreId, BUSINESS_KEYS } from './storeContext'
 import { isElectron, enqueueUpsert, enqueueDelete } from './localDB'
+import { isCloudOnline, aoReligar } from './connectivity'
 import type { Order, Product, Category, CashFlow, Purchase, DeliveryZone, PromoCode } from '../types/database'
 import type { StoreSettings } from './settings'
 
@@ -62,6 +63,9 @@ function keepLocalRows<T extends Record<string, any>>(cloud: T[], lsKey: string,
 // ── PULL: Supabase → localStorage ─────────────────────────────
 export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
+  // Sem ligação: não há nada a trazer da nuvem — a app fica com os dados locais (SQL),
+  // intactos, em vez de lançar dezenas de pedidos que vão todos falhar.
+  if (!isCloudOnline()) return { ok: false, error: 'Failed to fetch — sem ligação, a usar dados locais' }
 
   try {
     const sid = getCurrentStoreId()
@@ -353,6 +357,7 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 // ── PUSH: localStorage → Supabase ─────────────────────────────
 export async function pushAll(): Promise<{ ok: boolean; error?: string; details: string[] }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado', details: [] }
+  if (!isCloudOnline()) return { ok: false, error: 'Sem ligação — os dados ficam guardados localmente e são enviados quando a internet voltar', details: [] }
 
   const details: string[] = []
   let ok = true
@@ -831,8 +836,8 @@ export async function syncPendingStores() {
 
 export function startPendingStoresSync() {
   syncPendingStores()
-  setInterval(syncPendingStores, 30_000)
-  window.addEventListener('online', syncPendingStores)
+  setInterval(() => { if (isCloudOnline()) syncPendingStores() }, 30_000)
+  aoReligar(syncPendingStores) // voltou a haver ligação: envia já as lojas criadas offline
 }
 
 export async function syncStore(store: {
@@ -1079,6 +1084,7 @@ export function isRlsError(msg: string): boolean {
 export async function drainOutbox(): Promise<void> {
   if (!isElectron() || draining) return
   if (!isSupabaseReady() || !supabase) return
+  if (!isCloudOnline()) return // sem ligação a fila espera, guardada no SQLite
   if (!(await hasCloudSession())) return // espera por uma sessão real; a fila fica guardada
 
   draining = true
@@ -1128,7 +1134,12 @@ export function startOutboxDrain() {
   if (!isElectron()) return
   drainOutbox()
   setInterval(drainOutbox, 30_000)
-  window.addEventListener('online', drainOutbox)
+  // Voltou a haver ligação (verificada de verdade, ver connectivity.ts): envia a fila
+  // que se acumulou offline e vai buscar o que mudou nos outros dispositivos.
+  aoReligar(async () => {
+    await drainOutbox()
+    await pullAll()
+  })
 }
 
 export async function deleteJournalEntry(id: string) {
