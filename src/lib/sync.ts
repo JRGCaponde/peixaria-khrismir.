@@ -1140,7 +1140,20 @@ export async function deleteJournalEntry(id: string) {
 }
 
 /** Apaga TODOS os lançamentos do diário da loja actual (zerar a contabilidade). */
-export async function clearJournalEntries(): Promise<{ ok: boolean; error?: string }> {
+export async function clearJournalEntries(ids: string[] = []): Promise<{ ok: boolean; error?: string }> {
+  // Marca cada lançamento como apagado ANTES de qualquer outra coisa: sem isto, os que
+  // ainda estavam na fila de envio (offline) eram reaplicados no arranque seguinte e o
+  // Diário "voltava" depois de zerado. Junta os ids que a fila ainda tem para esta loja.
+  const todos = new Set(ids)
+  const lojaAtual = getCurrentStoreId()
+  if (isElectron() && lojaAtual) {
+    try {
+      const pend: OutboxEntry[] = await (window as any).electronAPI.db.getPendingOutbox()
+      pend.filter(e => e.table_name === 'journal_entries' && e.store_id === lojaAtual).forEach(e => todos.add(e.row_id))
+    } catch { /* sem fila — só os ids recebidos */ }
+  }
+  todos.forEach(id => { markDeleted(id); enqueueDelete('journal_entries', id) })
+
   if (!isSupabaseReady() || !supabase) return { ok: true } // sem cloud — só local mesmo
   const sid = getCurrentStoreId()
   if (!sid) return { ok: false, error: 'Sem loja seleccionada' }

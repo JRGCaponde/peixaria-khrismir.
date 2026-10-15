@@ -65,8 +65,9 @@ export default function AccountingTab() {
     if (!ok) return
     setClearing(true)
     const tid = toast.loading('A zerar a Contabilidade…')
+    const ids = getJournalEntries().map(e => e.id) // antes de zerar: é preciso saber o que se apaga
     localStorage.setItem('khrismir_journal', '[]')
-    const result = await clearJournalEntries()
+    const result = await clearJournalEntries(ids)
     toast.dismiss(tid)
     setClearing(false)
     if (result.ok) {
