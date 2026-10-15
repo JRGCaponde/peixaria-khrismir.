@@ -7,7 +7,7 @@
 import { supabase, isSupabaseReady } from './supabase'
 import { getCurrentStoreId, BUSINESS_KEYS } from './storeContext'
 import { isElectron, enqueueUpsert, enqueueDelete } from './localDB'
-import { isCloudOnline, aoReligar } from './connectivity'
+import { isCloudOnline, aoReligar, verificarAgora } from './connectivity'
 import type { Order, Product, Category, CashFlow, Purchase, DeliveryZone, PromoCode } from '../types/database'
 import type { StoreSettings } from './settings'
 
@@ -1140,6 +1140,35 @@ export function startOutboxDrain() {
     await drainOutbox()
     await pullAll()
   })
+}
+
+/** Quantas alterações locais ainda esperam para ir para a nuvem (só no Electron). */
+export async function contarPendentes(): Promise<number> {
+  if (!isElectron()) return 0
+  try {
+    const p = await (window as any).electronAPI.db.getPendingOutbox()
+    return Array.isArray(p) ? p.length : 0
+  } catch { return 0 }
+}
+
+export type ResultadoSincronizar =
+  | { estado: 'sem-ligacao' }
+  | { estado: 'sem-sessao'; pendentes: number }
+  | { estado: 'ok'; enviados: number; pendentes: number; erro?: string }
+
+/**
+ * Botão "Sincronizar agora": volta a testar a ligação e, se houver internet, envia
+ * tudo o que ficou guardado localmente e vai buscar as novidades da nuvem.
+ */
+export async function sincronizarAgora(): Promise<ResultadoSincronizar> {
+  if (!(await verificarAgora())) return { estado: 'sem-ligacao' }
+  const antes = await contarPendentes()
+  if (!(await hasCloudSession())) return { estado: 'sem-sessao', pendentes: antes }
+  await syncPendingStores()
+  await drainOutbox()
+  const pull = await pullAll()
+  const depois = await contarPendentes()
+  return { estado: 'ok', enviados: Math.max(0, antes - depois), pendentes: depois, erro: pull.ok ? undefined : pull.error }
 }
 
 export async function deleteJournalEntry(id: string) {
