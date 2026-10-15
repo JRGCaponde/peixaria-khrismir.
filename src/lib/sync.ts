@@ -21,7 +21,7 @@ function lsSet(key: string, v: any) { localStorage.setItem(key, JSON.stringify(v
 // "ainda não sincronizado" em vez de "apagado de propósito").
 const DELETED_IDS_KEY = 'cf_deleted_ids'
 const MAX_DELETED_IDS = 500
-function getDeletedIds(): Set<string> {
+export function getDeletedIds(): Set<string> {
   return new Set(ls<string[]>(DELETED_IDS_KEY, []))
 }
 function markDeleted(id: string) {

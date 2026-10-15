@@ -4,7 +4,7 @@
  */
 
 import { format } from 'date-fns'
-import { syncCfMovements, syncCfAccounts, deleteCfMovement } from './sync'
+import { syncCfMovements, syncCfAccounts, deleteCfMovement, getDeletedIds } from './sync'
 import { isSupabaseReady } from './supabase'
 import { getSettings } from './settings'
 import {
@@ -472,7 +472,10 @@ export function migrateExistingData(force = false): { imported: number; skipped:
  */
 export function syncAllData(): void {
   const movements   = readMovements()
-  const existingIds = new Set(movements.map(m => m.id))
+  // O que o utilizador apagou de propósito não se recria a partir da venda/compra que
+  // ainda existe — antes, apagar um movimento "Compra: …" fazia-o voltar no arranque.
+  const apagados    = getDeletedIds()
+  const existingIds = new Set([...movements.map(m => m.id), ...apagados])
   const existingRefs = new Set(movements.filter(m => m.reference).map(m => m.reference as string))
   const accounts    = readAccounts()
   const defaultAcc  = accounts.find(a => a.type === 'cash')?.name ?? accounts[0]?.name ?? 'Caixa'

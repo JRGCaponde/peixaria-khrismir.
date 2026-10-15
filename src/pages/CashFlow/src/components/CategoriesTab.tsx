@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Plus, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Category, CashMovement, CATEGORY_COLORS } from '../lib/types'
+import { deleteCfCategory } from '../../../../lib/sync'
 
 interface CategoriesTabProps {
   categories: Category[]
@@ -27,6 +28,7 @@ export function CategoriesTab({ categories, setCategories, movements }: Categori
     if (inUse) { toast.error('Categoria em uso — não pode ser eliminada'); return }
     if (!confirm(`Eliminar categoria "${cat.name}"?`)) return
     setCategories(prev => prev.filter(c => c.id !== cat.id))
+    deleteCfCategory(cat.id) // sem isto a categoria só saía do ecrã e voltava no arranque seguinte
     toast.success('Categoria eliminada')
   }
 

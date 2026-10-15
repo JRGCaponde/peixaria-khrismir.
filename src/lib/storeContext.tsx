@@ -58,7 +58,10 @@ export const BUSINESS_KEYS = [
   'khrismir_map_references', 'khrismir_profiles',   // mapa de entregas, equipa da loja
   'khrismir_pos_cart',       // carrinho do PDV em curso
   'khrismir_last_pull_store',
-  'cf_deleted_ids',          // tombstone — recomeça para a nova loja
+  // 'cf_deleted_ids' NÃO entra aqui de propósito: é a lista do que o utilizador apagou
+  // (movimentos/lançamentos) e serve para syncAllData() não os recriar a partir das
+  // compras/vendas. Os ids são únicos (sync-pur-{idDaCompra}), por isso guardá-los
+  // entre lojas é seguro — limpá-la ao mudar de loja fazia os apagados voltarem.
   'khrismir_auto_synced',    // força re-push dos dados da nova loja
 ]
 
