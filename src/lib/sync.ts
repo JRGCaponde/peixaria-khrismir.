@@ -34,6 +34,31 @@ function markDeleted(id: string) {
 const STORE_BUSINESS_KEYS = BUSINESS_KEYS.filter(k => k !== 'khrismir_last_pull_store')
 const LAST_PULL_STORE_KEY = 'khrismir_last_pull_store'
 
+/**
+ * Electron: o SQLite deste computador é a fonte de verdade. O pull traz da nuvem
+ * linhas novas e actualizações, mas NUNCA apaga uma linha local só porque a nuvem
+ * não a tem (ainda não foi enviada, a nuvem foi limpa, a sessão não deixa ler...).
+ * Antes, uma nuvem vazia ou incompleta apagava o trabalho local a cada arranque.
+ * `uniqueBy`: o campo que a base de dados não deixa repetir (ex: nome do produto na
+ * loja) — se a nuvem já tem uma linha com esse valor, a local com outro id é
+ * um resíduo (ex: importação falhada) e descarta-se. Na Web mantém a substituição.
+ */
+function keepLocalRows<T extends Record<string, any>>(cloud: T[], lsKey: string, uniqueBy?: string): T[] {
+  if (!isElectron()) return cloud
+  const cloudIds = new Set(cloud.map(r => r.id))
+  const cloudUnique = uniqueBy ? new Set(cloud.map(r => r[uniqueBy])) : null
+  const seen = new Set<any>()
+  const extra = ls<T[]>(lsKey, []).filter(r => {
+    if (!r?.id || cloudIds.has(r.id)) return false
+    if (uniqueBy) {
+      if (cloudUnique!.has(r[uniqueBy]) || seen.has(r[uniqueBy])) return false
+      seen.add(r[uniqueBy])
+    }
+    return true
+  })
+  return [...extra, ...cloud]
+}
+
 // ── PULL: Supabase → localStorage ─────────────────────────────
 export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
@@ -93,8 +118,8 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     // SEMPRE escreve no localStorage — mesmo arrays vazios limpam dados da loja anterior.
     // Nunca usar "length > 0" aqui: uma loja nova com 0 movimentos deve limpar os
     // movimentos que ficaram de outra loja neste dispositivo.
-    if (cfAccounts.data)   lsSet('cf_accounts',   cfAccounts.data)
-    if (cfCategories.data) lsSet('cf_categories', cfCategories.data)
+    if (cfAccounts.data)   lsSet('cf_accounts',   keepLocalRows(cfAccounts.data, 'cf_accounts', 'name'))
+    if (cfCategories.data) lsSet('cf_categories', keepLocalRows(cfCategories.data, 'cf_categories', 'name'))
 
     // cf_movements — merge local + Supabase (preserva movimentos locais não sincronizados)
     // Limitado a 300 registos para não encher o localStorage (~300 KB)
@@ -117,8 +142,8 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
 
     if (storesData.data)   mergeCloudStores(storesData.data)
 
-    if (accAccounts.data && accAccounts.data.length > 0) lsSet('khrismir_accounts', accAccounts.data)
-    if (mapRefs.data) lsSet('khrismir_map_references', mapRefs.data)
+    if (accAccounts.data && accAccounts.data.length > 0) lsSet('khrismir_accounts', keepLocalRows(accAccounts.data, 'khrismir_accounts', 'code'))
+    if (mapRefs.data) lsSet('khrismir_map_references', keepLocalRows(mapRefs.data, 'khrismir_map_references'))
 
     // Lançamentos contabilísticos — merge local + Supabase (preserva lançamentos locais não sincronizados)
     if (journal.data) {
@@ -133,8 +158,8 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       lsSet('khrismir_journal', merged)
     }
 
-    if (cat.data)    lsSet('khrismir_categories', cat.data)
-    if (prod.data)   lsSet('khrismir_products', prod.data)
+    if (cat.data)    lsSet('khrismir_categories', keepLocalRows(cat.data, 'khrismir_categories', 'name'))
+    if (prod.data)   lsSet('khrismir_products', keepLocalRows(prod.data, 'khrismir_products', 'name'))
     if (ord.data) {
       const fromSupabase = ord.data.map(({ order_items, ...o }: any) => ({ ...o, items: order_items ?? [] }))
       // Preservar pedidos locais que ainda não chegaram ao Supabase (apenas da mesma loja)
@@ -166,10 +191,10 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
       lsSet('khrismir_purchases', [...localOnlyPur, ...validSb])
     }
 
-    if (zones.data)  lsSet('khrismir_delivery_zones', zones.data)
-    if (promos.data) lsSet('khrismir_promos', promos.data)
+    if (zones.data)  lsSet('khrismir_delivery_zones', keepLocalRows(zones.data, 'khrismir_delivery_zones'))
+    if (promos.data) lsSet('khrismir_promos', keepLocalRows(promos.data, 'khrismir_promos'))
     if (sets.data)   lsSet('khrismir_settings', sets.data)
-    if (sup.data)    lsSet('khrismir_suppliers', sup.data)
+    if (sup.data)    lsSet('khrismir_suppliers', keepLocalRows(sup.data, 'khrismir_suppliers', 'name'))
 
     // Devoluções e fidelização — merge local + Supabase (preserva registos locais
     // ainda não sincronizados, em vez de os apagar com uma substituição directa)

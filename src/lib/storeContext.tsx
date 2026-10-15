@@ -116,12 +116,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         // só reage a uma resposta clara de "não encontrada".
         if (error) return
         if (!data) {
-          toast.error(
-            `A loja "${store.name}" já não existe no servidor (foi apagada noutro dispositivo). ` +
-            `Escolhe ou cria uma loja para continuar.`,
+          // A cópia deste dispositivo é a fonte de verdade (a app funciona offline):
+          // NUNCA apagar os dados locais só porque a nuvem não tem a loja — antes isto
+          // limpava produtos, vendas e caixa a cada arranque. Recria a loja na nuvem a
+          // partir da cópia local; o resto do trabalho sobe pela fila de envio.
+          const { syncStore } = await import('./sync')
+          await syncStore(store)
+          toast.info(
+            `A loja "${store.name}" não existia na nuvem — foi recriada a partir dos dados deste dispositivo. ` +
+            `Nada foi apagado.`,
             { duration: 10000 }
           )
-          clearStore()
         }
       } catch { /* sem internet — não assume nada, mantém a loja local */ }
     })()
