@@ -187,11 +187,12 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
 
     // Purchases — merge local + Supabase, filtrando entradas com total_price <= 0
     if (pur.data) {
-      const validSb = pur.data.filter((p: any) => Number(p.total_price) > 0 && p.product_id)
+      const deletedPur = getDeletedIds()
+      const validSb = pur.data.filter((p: any) => Number(p.total_price) > 0 && p.product_id && !deletedPur.has(p.id))
       const localPur: any[] = (() => { try { return JSON.parse(localStorage.getItem('khrismir_purchases') || '[]') } catch { return [] } })()
       const sbPurIds = new Set(validSb.map((p: any) => p.id))
       // Só preserva locais válidos (mesmo filtro: total_price > 0 e product_id existe)
-      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id) && Number(p.total_price) > 0 && p.product_id)
+      const localOnlyPur = localPur.filter((p: any) => p.id && !sbPurIds.has(p.id) && !deletedPur.has(p.id) && Number(p.total_price) > 0 && p.product_id)
       lsSet('khrismir_purchases', [...localOnlyPur, ...validSb])
     }
 
@@ -768,6 +769,15 @@ export async function syncPurchases(purchases: any[]) {
   enqueueUpsert('purchases', purchaseRows) // fila local (Electron)
   const { error } = await supabase.from('purchases').upsert(purchaseRows, { onConflict: 'id' })
   if (error) console.error('[syncPurchases]', error.message)
+}
+
+/** Apaga compras (local + nuvem). Marca-as como apagadas para o pull não as devolver. */
+export async function deletePurchases(ids: string[]) {
+  if (!ids.length) return
+  ids.forEach(id => { markDeleted(id); enqueueDelete('purchases', id) }) // fila local (Electron)
+  if (!isSupabaseReady() || !supabase) return
+  const { error } = await supabase.from('purchases').delete().in('id', ids)
+  if (error) console.error('[deletePurchases]', error.message)
 }
 
 export async function syncSettings(settings: StoreSettings) {

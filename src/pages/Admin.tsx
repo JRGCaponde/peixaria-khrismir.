@@ -19,11 +19,11 @@ import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, P
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
 import { printInvoice, printPrimaveraInvoice, type PrimaveraDocInfo } from '../utils/invoice'
 import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport, printInventoryReport } from '../utils/reports'
-import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement } from '../lib/cashflow'
+import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement, cancelPurchaseMovement } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
   syncProducts, syncCategories, syncPromos, syncSettings,
-  syncPurchases, syncSuppliers, deleteSupplier, clearAllData,
+  syncPurchases, deletePurchases, syncSuppliers, deleteSupplier, clearAllData,
   deleteProduct, deleteCategory, deletePromo,
   syncStore, deleteStorePermanent, syncLoyalty, syncReturns,
   syncMapReferences, deleteMapReference, getLocalStores, mergeCloudStores,
@@ -1796,6 +1796,35 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
     toast.success(`${newPurchases.length} produto(s) registados! Total: ${bulkTotal.toLocaleString()} Kz`)
   }
 
+  // ── Apagar compras ────────────────────────────────────────────────────────
+  const removePurchases = (list: any[]) => {
+    if (!list.length) return
+    const um = list.length === 1
+    const nome = um ? (products.find((x: any) => x.id === list[0].product_id)?.name ?? list[0].product_name ?? 'esta compra') : `${list.length} compras`
+    if (!confirm(`Apagar ${um ? 'a compra de' : ''} ${nome}?
+
+O movimento de Caixa e o lançamento da Contabilidade ligados a ${um ? 'ela' : 'elas'} também são anulados e o saldo da conta é reposto.`)) return
+    const qtyByProduct = new Map<string, number>()
+    for (const p of list) qtyByProduct.set(p.product_id, (qtyByProduct.get(p.product_id) || 0) + Number(p.quantity || 0))
+    const afectados = products.filter((x: any) => qtyByProduct.has(x.id))
+    const tirarStock = afectados.length > 0 && confirm(`Também retirar do stock as quantidades que esta${um ? '' : 's'} compra${um ? '' : 's'} tinha${um ? '' : 'm'} somado?
+
+OK = retira do stock · Cancelar = mantém o stock como está`)
+
+    const ids = new Set(list.map(p => p.id))
+    const restantes = purchases.filter((p: any) => !ids.has(p.id))
+    setPurchases(restantes); localStorage.setItem('khrismir_purchases', JSON.stringify(restantes))
+    list.forEach(p => cancelPurchaseMovement(p.id))
+    deletePurchases([...ids])
+
+    if (tirarStock) {
+      const upProd = products.map((x: any) => qtyByProduct.has(x.id) ? { ...x, stock_quantity: Math.max(0, Number(x.stock_quantity) - qtyByProduct.get(x.id)!) } : x)
+      setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
+      syncProducts(upProd)
+    }
+    toast.success(`${list.length} compra(s) apagada(s)${tirarStock ? ' e stock ajustado' : ''}`)
+  }
+
   // ── Sync PRIMAVERA ────────────────────────────────────────────────────────
   const [syncState, setSyncState] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -2071,6 +2100,11 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
                'Sync PRIMAVERA'}
             </button>
             {purchases.length > 0 && (
+              <button onClick={() => removePurchases(purchases)} className="flex items-center gap-2 bg-red-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-red-700 transition">
+                <Trash2 className="w-4 h-4" /> Apagar todas
+              </button>
+            )}
+            {purchases.length > 0 && (
               <button onClick={exportExcel} className="flex items-center gap-2 bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-green-700 transition">
                 <Download className="w-4 h-4" /> Excel
               </button>
@@ -2079,11 +2113,11 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
         </div>
         <table className="w-full text-left">
           <thead className="bg-gray-50 text-xs font-bold text-gray-400 uppercase">
-            <tr><th className="p-4">Produto</th><th className="p-4">Data</th><th className="p-4">Fornecedor</th><th className="p-4">Qtd.</th><th className="p-4 text-right">Total Custo</th></tr>
+            <tr><th className="p-4">Produto</th><th className="p-4">Data</th><th className="p-4">Fornecedor</th><th className="p-4">Qtd.</th><th className="p-4 text-right">Total Custo</th><th className="p-4 w-12"></th></tr>
           </thead>
           <tbody className="divide-y">
             {purchases.length === 0 ? (
-              <tr><td colSpan={5} className="p-8 text-center text-gray-400 text-sm">Sem compras registadas</td></tr>
+              <tr><td colSpan={6} className="p-8 text-center text-gray-400 text-sm">Sem compras registadas</td></tr>
             ) : purchases.map((p: any) => (
               <tr key={p.id} className={`hover:bg-gray-50 ${p.source === 'primavera' ? 'bg-indigo-50/30' : ''}`}>
                 <td className="p-4 font-medium">
@@ -2099,6 +2133,9 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
                 <td className="p-4 text-sm text-gray-600">{p.supplier || '—'}</td>
                 <td className="p-4 text-sm">{p.quantity} kg</td>
                 <td className="p-4 text-right text-red-600 font-bold">{Number(p.total_price).toLocaleString()} Kz</td>
+                <td className="p-4 text-right">
+                  <button onClick={() => removePurchases([p])} title="Apagar compra" className="text-gray-400 hover:text-red-600 p-2 transition"><Trash2 className="w-4 h-4" /></button>
+                </td>
               </tr>
             ))}
           </tbody>

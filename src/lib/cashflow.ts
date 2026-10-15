@@ -346,6 +346,29 @@ export function registerPurchaseMovement(
 }
 
 /**
+ * Anula o movimento de caixa e os lançamentos contabilísticos de uma compra apagada
+ * (o inverso de registerPurchaseMovement / registerCreditPurchase / settlePayable).
+ */
+export function cancelPurchaseMovement(purchaseId: string) {
+  const id = `sync-pur-${purchaseId}`
+  const movements = readMovements()
+  const toCancel = movements.filter(m => m.id === id)
+  if (toCancel.length > 0) {
+    saveMovements(movements.filter(m => m.id !== id))
+    toCancel.forEach(m => deleteCfMovement(m.id))
+    const accounts = readAccounts()
+    toCancel.forEach(m => {
+      const idx = accounts.findIndex(a => a.name === m.account)
+      if (idx !== -1) accounts[idx].balance += m.amount // a compra tinha tirado este valor da conta
+    })
+    saveAccounts(accounts)
+    syncCfAccounts(accounts)
+  }
+  removeJournalEntry(`auto-compra-${purchaseId}`)
+  removeJournalEntry(`auto-liq-compra-${purchaseId}`)
+}
+
+/**
  * Compra a crédito (fiado) — regista o custo na Contabilidade (Crédito 33
  * Fornecedores) mas NÃO cria movimento de caixa: o dinheiro só sai quando
  * settlePayable() for chamado (ver Contas a Pagar/Receber no Admin).
