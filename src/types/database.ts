@@ -14,10 +14,6 @@ export interface User {
   created_at?: string
 }
 
-export interface Employee extends User {
-  password: string
-}
-
 export interface Category {
   id: string
   name: string
@@ -174,15 +170,6 @@ export interface PromoCode {
   max_uses?: number
   expires_at?: string
   active: boolean
-  created_at: string
-}
-
-export interface StockMovement {
-  id: string
-  product_id: string
-  quantity: number
-  movement_type: 'entrada' | 'saída'
-  reason: string
   created_at: string
 }
 

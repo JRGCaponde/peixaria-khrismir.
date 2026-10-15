@@ -895,16 +895,6 @@ export async function deleteStorePermanent(id: string): Promise<{ ok: boolean; e
   return { ok: true }
 }
 
-export async function syncDeliveryZones(zones: DeliveryZone[]) {
-  if (!isSupabaseReady() || !supabase) return
-  const sid = getCurrentStoreId()
-  if (!sid) { console.error('[syncDeliveryZones] Sem loja seleccionada — sincronização cancelada'); return }
-  const zoneRows = zones.map(z => ({ ...z, store_id: sid }))
-  enqueueUpsert('delivery_zones', zoneRows) // fila local (Electron)
-  const { error } = await supabase.from('delivery_zones').upsert(zoneRows, { onConflict: 'id' })
-  if (error) console.error('[syncDeliveryZones]', error.message)
-}
-
 export async function syncPromos(promos: PromoCode[]): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
@@ -1202,13 +1192,6 @@ export async function deleteCategory(id: string) {
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('categories').delete().eq('id', id)
   if (error) console.error('[deleteCategory]', error.message)
-}
-
-export async function deleteZone(id: string) {
-  enqueueDelete('delivery_zones', id) // fila local (Electron)
-  if (!isSupabaseReady() || !supabase) return
-  const { error } = await supabase.from('delivery_zones').delete().eq('id', id)
-  if (error) console.error('[deleteZone]', error.message)
 }
 
 export async function deletePromo(id: string) {
