@@ -459,7 +459,7 @@ export function printPrimaveraInvoice(
 
   const items: any[] = order.items ?? []
   const totalAbs  = Math.abs(Number(order.total ?? 0))
-  const totalNet  = sale?.total_net  != null ? Math.abs(Number(sale.total_net))  : totalAbs / 1.14
+  const totalNet  = sale?.total_net  != null ? Math.abs(Number(sale.total_net))  : totalAbs / (1 + settings.iva_rate / 100)
   const totalVat  = sale?.total_vat  != null ? Math.abs(Number(sale.total_vat))  : totalAbs - totalNet
   const ivaRate   = totalNet > 0 ? Math.round((totalVat / totalNet) * 100) : settings.iva_rate
   const isExempt  = ivaRate === 0

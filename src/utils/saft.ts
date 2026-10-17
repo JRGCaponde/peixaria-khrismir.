@@ -48,7 +48,7 @@ export function generateSAFTXML(
   settings: StoreSettings,
   year?: number
 ): string {
-  const ivaRate = (settings.iva_rate ?? 14) / 100
+  const ivaRate = (settings.iva_rate ?? 0) / 100
   const targetYear = year ?? new Date().getFullYear()
 
   const filtered = orders
@@ -97,7 +97,7 @@ export function generateSAFTXML(
           <TaxType>IVA</TaxType>
           <TaxCountryRegion>AO</TaxCountryRegion>
           <TaxCode>NOR</TaxCode>
-          <TaxPercentage>${settings.iva_rate ?? 14}</TaxPercentage>
+          <TaxPercentage>${settings.iva_rate ?? 0}</TaxPercentage>
         </Tax>
       </Line>`).join('')
 
@@ -189,8 +189,8 @@ export function generateSAFTXML(
         <TaxType>IVA</TaxType>
         <TaxCountryRegion>AO</TaxCountryRegion>
         <TaxCode>NOR</TaxCode>
-        <Description>IVA ${settings.iva_rate ?? 14}% — Taxa Normal</Description>
-        <TaxPercentage>${settings.iva_rate ?? 14}</TaxPercentage>
+        <Description>IVA ${settings.iva_rate ?? 0}% — Taxa Normal</Description>
+        <TaxPercentage>${settings.iva_rate ?? 0}</TaxPercentage>
       </TaxTableEntry>
     </TaxTable>
   </MasterFiles>

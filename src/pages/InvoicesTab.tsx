@@ -235,7 +235,7 @@ function InvoiceForm({ docType, products, storeId, onClose, onCreated }: {
   const removeLine = (idx: number) => setLines(ls => ls.filter((_, i) => i !== idx))
 
   const total = lines.reduce((s, l) => s + l.quantity * l.unit_price, 0)
-  const ivaRate = getSettings().iva_rate ?? 14
+  const ivaRate = getSettings().iva_rate ?? 0
   const netTotal = total / (1 + ivaRate / 100)
   const ivaTotal = total - netTotal
 

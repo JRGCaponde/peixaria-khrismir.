@@ -788,7 +788,7 @@ export async function syncSettings(settings: StoreSettings) {
   // "id" já é sempre igual ao store_id nesta escrita (rowId acima) — usa "id"
   // no onConflict porque é a chave primária (garantidamente única); store_id
   // nunca teve uma constraint de unicidade própria na base de dados.
-  const settingsRow = { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid }
+  const settingsRow = { id: rowId, ...settings, iva_rate: 0, updated_at: new Date().toISOString(), store_id: sid }
   enqueueUpsert('store_settings', [settingsRow]) // fila local (Electron)
   const { error } = await supabase.from('store_settings').upsert(settingsRow, { onConflict: 'id' })
   if (error) console.error('[syncSettings]', error.message)
@@ -864,7 +864,7 @@ export async function syncStore(store: {
     email: store.email ?? '',
     whatsapp: store.whatsapp ?? '',
     nif: store.nif ?? '',
-    iva_rate: store.iva_rate ?? 14,
+    iva_rate: 0, // IVA sempre 0
     active: store.active !== false,
     updated_at: new Date().toISOString(),
   }

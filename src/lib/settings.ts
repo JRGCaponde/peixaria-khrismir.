@@ -33,7 +33,7 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   email: 'khrismir@gmail.com',
   address: 'Centralidade da Quilemba, Lubango, Huíla, Angola',
   nif: '5001210092',
-  iva_rate: 14,
+  iva_rate: 0,
   delivery_enabled: true,
   min_order_delivery: 0,
   opening_hours: 'Seg–Sáb: 07:00–18:00',
@@ -47,14 +47,18 @@ export const DEFAULT_SETTINGS: StoreSettings = {
   store_lng: 13.4925,
 }
 
+// O IVA é sempre 0: seja qual for o valor guardado (cache antiga, nuvem, outra loja),
+// a app usa esta taxa fixa em facturas, recibos, relatórios, SAF-T e contabilidade.
+export const IVA_RATE_FIXA = 0
+
 export function getSettings(): StoreSettings {
   try {
     const stored = localStorage.getItem('khrismir_settings')
-    if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored) }
+    if (stored) return { ...DEFAULT_SETTINGS, ...JSON.parse(stored), iva_rate: IVA_RATE_FIXA }
   } catch {}
   return { ...DEFAULT_SETTINGS }
 }
 
 export function saveSettings(s: StoreSettings): void {
-  localStorage.setItem('khrismir_settings', JSON.stringify(s))
+  localStorage.setItem('khrismir_settings', JSON.stringify({ ...s, iva_rate: IVA_RATE_FIXA }))
 }

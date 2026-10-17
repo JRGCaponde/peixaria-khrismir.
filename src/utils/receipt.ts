@@ -59,9 +59,9 @@ export function printReceipt(order: Order, settings: StoreSettings): void {
   rows.push(rdivider())
   if (delivery > 0) rows.push(rline('Taxa entrega', rfmt(delivery) + ' Kz'))
   if (discount > 0) rows.push(rline('Desconto', '-' + rfmt(discount) + ' Kz'))
-  const ivaRate = (settings.iva_rate ?? 14) / 100
+  const ivaRate = (settings.iva_rate ?? 0) / 100
   rows.push(rline('Base tributavel', rfmt(total / (1 + ivaRate)) + ' Kz'))
-  rows.push(rline('IVA (' + (settings.iva_rate ?? 14) + '%)', rfmt(total - total / (1 + ivaRate)) + ' Kz'))
+  rows.push(rline('IVA (' + (settings.iva_rate ?? 0) + '%)', rfmt(total - total / (1 + ivaRate)) + ' Kz'))
   rows.push(rdivider('='))
   rows.push(rline('TOTAL', rfmt(total) + ' Kz'))
   rows.push(rdivider('='))

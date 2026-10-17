@@ -13,7 +13,7 @@ import { pullAll, syncStore, getLocalStores, mergeCloudStores } from '../lib/syn
 import { startRealtime } from '../lib/realtime'
 import { toast } from 'sonner'
 
-const emptyForm = () => ({ name: '', address: '', phone: '', email: '', whatsapp: '', nif: '', iva_rate: '14' })
+const emptyForm = () => ({ name: '', address: '', phone: '', email: '', whatsapp: '', nif: '', iva_rate: '0' })
 
 export default function StorePicker() {
   const { setStore } = useStore()
@@ -79,7 +79,7 @@ export default function StorePicker() {
         email: form.email.trim() || undefined,
         whatsapp: form.whatsapp.trim() || undefined,
         nif: form.nif.trim() || undefined,
-        iva_rate: form.iva_rate ? Number(form.iva_rate) : 14,
+        iva_rate: 0, // IVA sempre 0
         active: true,
       })
       const pending = getLocalStores().find(s => s.id === result.id)?.pending_sync
@@ -218,7 +218,7 @@ export default function StorePicker() {
                   <input className={inp} value={form.nif} onChange={e => setForm({ ...form, nif: e.target.value })} placeholder="500XXXXXXX" />
                 </Field>
                 <Field label="IVA (%)">
-                  <input className={inp} type="number" min="0" max="100" value={form.iva_rate} onChange={e => setForm({ ...form, iva_rate: e.target.value })} />
+                  <input className={inp + ' bg-gray-100 text-gray-500'} type="number" value={0} readOnly title="O IVA é sempre 0" />
                 </Field>
               </div>
               <Field label="Morada">
