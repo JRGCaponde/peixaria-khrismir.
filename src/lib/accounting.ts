@@ -12,7 +12,8 @@
  */
 
 import type { AccountingAccount, JournalEntry, JournalLine } from '../types/database'
-import { syncAccountingAccounts, syncJournalEntries, deleteJournalEntry } from './sync'
+import { syncAccountingAccounts, syncJournalEntries, deleteJournalEntry, syncSettings } from './sync'
+import { getSettings, saveSettings } from './settings'
 import { supabase, isSupabaseReady } from './supabase'
 import { getCurrentStoreId } from './storeContext'
 
@@ -135,6 +136,28 @@ export async function removerIvaDosLancamentos(opts: { nuvem?: boolean } = {}): 
 
   if (alterados.size) await syncJournalEntries([...alterados.values()])
   return alterados.size
+}
+
+const IVA_ZERO_FLAG = 'khrismir_iva_zero_v1_'
+
+/**
+ * Arranque com IVA a 0 — UMA só vez por loja (depois a taxa pode ser editada à vontade):
+ * põe a taxa a 0 e limpa o IVA dos lançamentos antigos. Nunca volta a correr, para não
+ * apagar o IVA de vendas novas quando a loja passar a cobrá-lo.
+ */
+export async function iniciarIvaZero(opts: { nuvem?: boolean } = {}): Promise<void> {
+  const sid = getCurrentStoreId()
+  if (!sid) return
+  const flag = IVA_ZERO_FLAG + sid
+  if (localStorage.getItem(flag)) return
+  localStorage.setItem(flag, '1')
+  const st = getSettings()
+  if (st.iva_rate !== 0) {
+    const novo = { ...st, iva_rate: 0 }
+    saveSettings(novo)
+    syncSettings(novo)
+  }
+  await removerIvaDosLancamentos(opts)
 }
 
 /** Lança um movimento manual. Rejeita se débitos e créditos não baterem. */

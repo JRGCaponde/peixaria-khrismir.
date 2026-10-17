@@ -19,7 +19,7 @@ import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, P
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
 import { printInvoice, printPrimaveraInvoice, type PrimaveraDocInfo } from '../utils/invoice'
 import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport, printInventoryReport } from '../utils/reports'
-import { removerIvaDosLancamentos } from '../lib/accounting'
+import { iniciarIvaZero } from '../lib/accounting'
 import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement, cancelPurchaseMovement } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
@@ -151,7 +151,7 @@ export default function Admin() {
       setProducts(load('khrismir_products', initialProducts))
       setCategories(load('khrismir_categories', initialCategories))
       syncAllData()
-      removerIvaDosLancamentos() // IVA é sempre 0 — limpa lançamentos antigos (local; a nuvem é feita no pull)
+      iniciarIvaZero() // uma só vez por loja: IVA a 0 e lançamentos antigos sem IVA
     }
     loadAll()
 
@@ -2629,14 +2629,13 @@ function SettingsTab({ settings, onSave }: { settings: StoreSettings; onSave: (s
             { field: 'whatsapp', label: 'WhatsApp (sem +)',  type: 'text',   placeholder: '244929970984'        },
             { field: 'email',    label: 'Email',             type: 'email',  placeholder: 'loja@email.com'      },
             { field: 'nif',      label: 'NIF',               type: 'text',   placeholder: '5001210092'          },
-            { field: 'iva_rate', label: 'Taxa IVA (%) — fixa',  type: 'number', placeholder: '0'                   },
+            { field: 'iva_rate', label: 'Taxa IVA (%)',       type: 'number', placeholder: '0'                   },
           ].map(({ field, label, type, placeholder }) => (
             <div key={field}>
               <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
               <input type={type} value={(form as any)[field]} placeholder={placeholder}
                 onChange={e => setForm(f => ({ ...f, [field]: type === 'number' ? Number(e.target.value) : e.target.value }))}
-                readOnly={field === 'iva_rate'} title={field === 'iva_rate' ? 'O IVA é sempre 0' : undefined}
-                className={`w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500 ${field === 'iva_rate' ? 'bg-gray-100 text-gray-500' : ''}`} required />
+                className="w-full border p-3 rounded-xl focus:ring-2 focus:ring-cyan-500" required />
             </div>
           ))}
         </div>
@@ -4062,7 +4061,7 @@ function StoresTab() {
   const openEdit = (s: any) => {
     setForm({ id: s.id, name: s.name ?? '', slug: s.slug ?? '', address: s.address ?? '',
       phone: s.phone ?? '', email: s.email ?? '', whatsapp: s.whatsapp ?? '',
-      nif: s.nif ?? '', iva_rate: '0', active: s.active !== false })
+      nif: s.nif ?? '', iva_rate: String(s.iva_rate ?? 0), active: s.active !== false })
     setShowModal(true)
   }
 
@@ -4073,7 +4072,7 @@ function StoresTab() {
       id: form.id, name: form.name.trim(),
       slug: form.slug.trim() || form.name.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
       address: form.address, phone: form.phone, email: form.email, whatsapp: form.whatsapp,
-      nif: form.nif, iva_rate: 0, active: form.active,
+      nif: form.nif, iva_rate: parseFloat(form.iva_rate) || 0, active: form.active,
     })
     setSaving(false)
     if (!result) { toast.error('Erro ao guardar loja'); return }
@@ -4122,6 +4121,7 @@ function StoresTab() {
     { label: 'Email',         key: 'email',    placeholder: 'loja@exemplo.ao'       },
     { label: 'WhatsApp',      key: 'whatsapp', placeholder: '244900000000'          },
     { label: 'NIF',           key: 'nif',      placeholder: '5001234567'            },
+    { label: 'Taxa IVA (%)',  key: 'iva_rate', placeholder: '0'                     },
   ]
 
   return (
@@ -4175,7 +4175,7 @@ function StoresTab() {
                 {s.address && <p className="flex items-center gap-1.5"><MapPin className="w-3 h-3 flex-shrink-0" />{s.address}</p>}
                 {s.phone   && <p className="flex items-center gap-1.5"><Building2 className="w-3 h-3 flex-shrink-0" />{s.phone}</p>}
                 {s.email   && <p className="truncate">{s.email}</p>}
-                <p className="text-gray-400">IVA: 0%</p>
+                <p className="text-gray-400">IVA: {s.iva_rate ?? 0}%</p>
               </div>
               <div className="flex gap-2 mt-auto pt-3 border-t border-gray-100">
                 <button onClick={() => openEdit(s)} className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium bg-gray-50 hover:bg-cyan-50 hover:text-cyan-700 text-gray-600 py-2 rounded-lg transition">

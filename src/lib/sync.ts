@@ -266,8 +266,8 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     // senão o pull acima "apagava do ecrã" o trabalho feito sem sessão online.
     await applyPendingOutbox()
 
-    // IVA é sempre 0: limpa o IVA que ainda exista em lançamentos antigos (idempotente)
-    try { await (await import('./accounting')).removerIvaDosLancamentos({ nuvem: true }) } catch { /* não bloqueia o pull */ }
+    // Uma só vez por loja: IVA a 0 e lançamentos antigos sem IVA (ver iniciarIvaZero)
+    try { await (await import('./accounting')).iniciarIvaZero({ nuvem: true }) } catch { /* não bloqueia o pull */ }
 
     // Notifica todos os componentes que os dados foram actualizados
     window.dispatchEvent(new CustomEvent('khrismir:sync', { detail: { table: 'pullAll' } }))
@@ -791,7 +791,7 @@ export async function syncSettings(settings: StoreSettings) {
   // "id" já é sempre igual ao store_id nesta escrita (rowId acima) — usa "id"
   // no onConflict porque é a chave primária (garantidamente única); store_id
   // nunca teve uma constraint de unicidade própria na base de dados.
-  const settingsRow = { id: rowId, ...settings, iva_rate: 0, updated_at: new Date().toISOString(), store_id: sid }
+  const settingsRow = { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid }
   enqueueUpsert('store_settings', [settingsRow]) // fila local (Electron)
   const { error } = await supabase.from('store_settings').upsert(settingsRow, { onConflict: 'id' })
   if (error) console.error('[syncSettings]', error.message)
@@ -867,7 +867,7 @@ export async function syncStore(store: {
     email: store.email ?? '',
     whatsapp: store.whatsapp ?? '',
     nif: store.nif ?? '',
-    iva_rate: 0, // IVA sempre 0
+    iva_rate: store.iva_rate ?? 0,
     active: store.active !== false,
     updated_at: new Date().toISOString(),
   }
