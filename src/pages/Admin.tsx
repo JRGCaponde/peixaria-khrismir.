@@ -19,6 +19,7 @@ import type { Product, Category, Order, CashFlow, Purchase, User, OrderStatus, P
 import { getSettings, saveSettings, type StoreSettings } from '../lib/settings'
 import { printInvoice, printPrimaveraInvoice, type PrimaveraDocInfo } from '../utils/invoice'
 import { printDailySalesReport, printMonthlySalesReport, printPurchasesReport, printMonthlyReport, printCashFlowReport, printInventoryReport } from '../utils/reports'
+import { removerIvaDosLancamentos } from '../lib/accounting'
 import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement, cancelPurchaseMovement } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
@@ -150,6 +151,7 @@ export default function Admin() {
       setProducts(load('khrismir_products', initialProducts))
       setCategories(load('khrismir_categories', initialCategories))
       syncAllData()
+      removerIvaDosLancamentos() // IVA é sempre 0 — limpa lançamentos antigos (local; a nuvem é feita no pull)
     }
     loadAll()
 

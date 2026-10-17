@@ -13,6 +13,8 @@
 
 import type { AccountingAccount, JournalEntry, JournalLine } from '../types/database'
 import { syncAccountingAccounts, syncJournalEntries, deleteJournalEntry } from './sync'
+import { supabase, isSupabaseReady } from './supabase'
+import { getCurrentStoreId } from './storeContext'
 
 const ACCOUNTS_KEY = 'khrismir_accounts'
 const JOURNAL_KEY = 'khrismir_journal'
@@ -70,6 +72,69 @@ function linesBalanced(lines: JournalLine[]): boolean {
   const debit = round2(lines.reduce((s, l) => s + (l.debit || 0), 0))
   const credit = round2(lines.reduce((s, l) => s + (l.credit || 0), 0))
   return debit === credit && debit > 0
+}
+
+const CONTAS_IVA = new Set(['35', '36'])
+const CONTAS_PREFERIDAS = ['71', '78', '61', '62']
+
+/**
+ * Tira o IVA de um lançamento: a linha de IVA (contas 35/36) desaparece e o seu valor
+ * passa para a linha do mesmo lado (Vendas/CMVMC...), mantendo o lançamento equilibrado.
+ * Devolve null se não houver IVA ou se não for possível limpar com segurança.
+ */
+function semIva(entry: JournalEntry): JournalEntry | null {
+  const temIva = (l: JournalLine) => CONTAS_IVA.has(l.account_code) && (l.debit > 0 || l.credit > 0)
+  if (!entry.lines?.some(temIva)) return null
+  let lines = entry.lines.map(l => ({ ...l }))
+  for (const iva of lines.filter(temIva)) {
+    const lado: 'debit' | 'credit' = iva.credit > 0 ? 'credit' : 'debit'
+    const valor = iva[lado]
+    const candidatas = lines.filter(l => !CONTAS_IVA.has(l.account_code) && l[lado] > 0)
+    if (!candidatas.length) return null
+    const alvo = candidatas.find(l => CONTAS_PREFERIDAS.includes(l.account_code))
+      ?? candidatas.reduce((a, b) => (b[lado] > a[lado] ? b : a))
+    alvo[lado] = round2(alvo[lado] + valor)
+  }
+  lines = lines.filter(l => !CONTAS_IVA.has(l.account_code))
+  if (!linesBalanced(lines)) return null
+  return { ...entry, lines }
+}
+
+/**
+ * IVA é sempre 0: limpa o IVA dos lançamentos antigos (local e, se houver ligação, da
+ * nuvem). Idempotente — se já não houver IVA, não faz nada. Devolve quantos limpou.
+ */
+export async function removerIvaDosLancamentos(opts: { nuvem?: boolean } = {}): Promise<number> {
+  const locais = getJournalEntries()
+  const alterados = new Map<string, JournalEntry>()
+  const novosLocais = locais.map(e => {
+    const n = semIva(e)
+    if (!n) return e
+    alterados.set(n.id, n)
+    return n
+  })
+  if (alterados.size) saveJournal(novosLocais)
+
+  // A cache local guarda só os 500 mais recentes: vai também buscar à nuvem o que tiver IVA.
+  if (opts.nuvem && isSupabaseReady() && supabase) {
+    const sid = getCurrentStoreId()
+    if (sid) {
+      try {
+        for (const code of ['35', '36']) {
+          const { data } = await supabase.from('journal_entries').select('*').eq('store_id', sid)
+            .filter('lines', 'cs', JSON.stringify([{ account_code: code }]))
+          for (const e of (data ?? []) as JournalEntry[]) {
+            if (alterados.has(e.id)) continue
+            const n = semIva(e)
+            if (n) alterados.set(n.id, n)
+          }
+        }
+      } catch { /* sem ligação: fica para a próxima vez */ }
+    }
+  }
+
+  if (alterados.size) await syncJournalEntries([...alterados.values()])
+  return alterados.size
 }
 
 /** Lança um movimento manual. Rejeita se débitos e créditos não baterem. */

@@ -266,6 +266,9 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     // senão o pull acima "apagava do ecrã" o trabalho feito sem sessão online.
     await applyPendingOutbox()
 
+    // IVA é sempre 0: limpa o IVA que ainda exista em lançamentos antigos (idempotente)
+    try { await (await import('./accounting')).removerIvaDosLancamentos({ nuvem: true }) } catch { /* não bloqueia o pull */ }
+
     // Notifica todos os componentes que os dados foram actualizados
     window.dispatchEvent(new CustomEvent('khrismir:sync', { detail: { table: 'pullAll' } }))
 
