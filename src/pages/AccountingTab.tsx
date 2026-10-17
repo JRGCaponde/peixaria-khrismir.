@@ -256,8 +256,8 @@ function DiarioTab() {
   const [description, setDescription] = useState('')
   const [lines, setLines] = useState<JournalLine[]>([{ account_code: '', debit: 0, credit: 0 }, { account_code: '', debit: 0, credit: 0 }])
 
-  const totalDebit  = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0)
-  const totalCredit = lines.reduce((s, l) => s + (Number(l.credit) || 0), 0)
+  const totalDebit  = Math.round(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0) * 100) / 100
+  const totalCredit = Math.round(lines.reduce((s, l) => s + (Number(l.credit) || 0), 0) * 100) / 100
   const balanced = totalDebit === totalCredit && totalDebit > 0
 
   const updateLine = (i: number, patch: Partial<JournalLine>) => {
@@ -384,8 +384,8 @@ function DiarioTab() {
 /* ─── BALANCETE ─── */
 function BalanceteTab() {
   const [rows] = useState(() => getTrialBalance())
-  const totalDebit  = rows.reduce((s, r) => s + r.debit, 0)
-  const totalCredit = rows.reduce((s, r) => s + r.credit, 0)
+  const totalDebit  = Math.round(rows.reduce((s, r) => s + r.debit, 0) * 100) / 100
+  const totalCredit = Math.round(rows.reduce((s, r) => s + r.credit, 0) * 100) / 100
 
   return (
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
@@ -467,7 +467,7 @@ function DRETab() {
 /* ─── BALANÇO ─── */
 function BalancoTab() {
   const [b] = useState(() => getBalanceSheet())
-  const balanced = b.totalActivo === b.totalPassivoMaisCapital
+  const balanced = Math.abs(b.totalActivo - b.totalPassivoMaisCapital) < 0.005
 
   const Section = ({ title, items, total }: { title: string; items: { account: AccountingAccount; total: number }[]; total: number }) => (
     <div className="bg-white rounded-2xl shadow-sm p-5">

@@ -435,10 +435,12 @@ export interface BalanceSheet {
 /** Balanço a uma data — parte de saldos a 0 (sistema novo); lançamento de abertura é manual, como é prática normal. */
 export function getBalanceSheet(upToDate?: string): BalanceSheet {
   const trial = getTrialBalance(upToDate)
-  const activo = trial.filter(r => r.account.class >= 1 && r.account.class <= 4 && r.balance !== 0)
-    .map(r => ({ account: r.account, total: r.balance }))
-  const passivo = trial.filter(r => r.account.class === 3 && r.account.nature === 'credora' && r.balance !== 0)
-    .map(r => ({ account: r.account, total: -r.balance }))
+  // Pelo sinal do saldo (e não pela "natureza" da conta): saldo devedor → Activo; saldo credor
+  // (ex: 33 Fornecedores, 35 IVA Liquidado) → Passivo. Contar uma conta credora nos dois
+  // lados (como antes) deixava o Balanço desequilibrado.
+  const patrimoniais = trial.filter(r => r.account.class >= 1 && r.account.class <= 4 && r.balance !== 0)
+  const activo = patrimoniais.filter(r => r.balance > 0).map(r => ({ account: r.account, total: r.balance }))
+  const passivo = patrimoniais.filter(r => r.balance < 0).map(r => ({ account: r.account, total: -r.balance }))
   const capitalProprio = trial.filter(r => r.account.class === 5 && r.balance !== 0)
     .map(r => ({ account: r.account, total: -r.balance }))
 
