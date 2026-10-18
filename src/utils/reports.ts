@@ -5,6 +5,7 @@
 
 import type { Order, Purchase, Product, Category } from '../types/database'
 import type { StoreSettings } from '../lib/settings'
+import { escapeDeep, escapeHtml } from './html'
 
 // ── Utilitários ────────────────────────────────────────────────────────────────
 const f = (n: number) =>
@@ -102,6 +103,8 @@ function reportFooter(settings: StoreSettings) {
 // 1. RELATÓRIO DE VENDAS DIÁRIO
 // ══════════════════════════════════════════════════════════════════════════════
 export function printDailySalesReport(orders: Order[], settings: StoreSettings, date: string) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  orders = escapeDeep(orders); settings = escapeDeep(settings); date = escapeDeep(date)
   const ivaRate = settings.iva_rate / 100
   const dayOrders = orders.filter(o => o.created_at.slice(0, 10) === date)
   const valid     = dayOrders.filter(o => o.status !== 'cancelado')
@@ -203,6 +206,8 @@ export function printDailySalesReport(orders: Order[], settings: StoreSettings, 
 // 2. RELATÓRIO DE VENDAS MENSAL
 // ══════════════════════════════════════════════════════════════════════════════
 export function printMonthlySalesReport(orders: Order[], settings: StoreSettings, year: number, month: number) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  orders = escapeDeep(orders); settings = escapeDeep(settings)
   const ivaRate = settings.iva_rate / 100
   const monthOrders = orders.filter(o => {
     const d = new Date(o.created_at)
@@ -306,11 +311,13 @@ export function printMonthlySalesReport(orders: Order[], settings: StoreSettings
 //   { id, product_id, quantity, unit_price, total_price, supplier, created_at }
 // O Purchase type legado tem campos distintos — usamos any[] para compatibilidade.
 export function printPurchasesReport(purchases: any[], settings: StoreSettings, from: string, to: string) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  purchases = escapeDeep(purchases); settings = escapeDeep(settings); from = escapeDeep(from); to = escapeDeep(to)
   // Lookup de produtos para resolver nomes a partir de product_id
   let productsMap: Record<string, string> = {}
   try {
     const prods: any[] = JSON.parse(localStorage.getItem('khrismir_products') || '[]')
-    prods.forEach(p => { productsMap[p.id] = p.name })
+    prods.forEach(p => { productsMap[p.id] = escapeHtml(p.name) })
   } catch { /* sem lookup */ }
 
   const getDate  = (p: any): string => (p.created_at ?? p.date ?? '').slice(0, 10)
@@ -441,6 +448,8 @@ export function printMonthlyReport(
   year: number,
   month: number
 ) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  orders = escapeDeep(orders); purchases = escapeDeep(purchases); settings = escapeDeep(settings)
   const ivaRate = settings.iva_rate / 100
 
   const monthOrders = orders.filter(o => {
@@ -568,6 +577,8 @@ export function printMonthlyReport(
 // 5. RELATÓRIO DE FLUXO DE CAIXA
 // ══════════════════════════════════════════════════════════════════════════════
 export function printCashFlowReport(cfMovements: any[], settings: StoreSettings, from: string, to: string) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  cfMovements = escapeDeep(cfMovements); settings = escapeDeep(settings); from = escapeDeep(from); to = escapeDeep(to)
   // cf_movements (sistema actual) — type: 'income' | 'expense' | 'transfer'.
   // Transferências entre contas próprias não são entrada nem saída real, por
   // isso ficam de fora deste relatório (que é sobre dinheiro a entrar/sair).
@@ -624,6 +635,8 @@ export function printCashFlowReport(cfMovements: any[], settings: StoreSettings,
 // 6. RELATÓRIO DE INVENTÁRIO
 // ══════════════════════════════════════════════════════════════════════════════
 export function printInventoryReport(products: Product[], categories: Category[], settings: StoreSettings, onlyLowStock = false) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  products = escapeDeep(products); categories = escapeDeep(categories); settings = escapeDeep(settings)
   const catName: Record<string, string> = {}
   categories.forEach(c => { catName[c.id] = c.name })
 

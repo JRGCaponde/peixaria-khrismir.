@@ -199,6 +199,17 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
     if (zones.data)  lsSet('khrismir_delivery_zones', keepLocalRows(zones.data, 'khrismir_delivery_zones'))
     if (promos.data) lsSet('khrismir_promos', keepLocalRows(promos.data, 'khrismir_promos'))
     if (sets.data)   lsSet('khrismir_settings', sets.data)
+    else {
+      // Sem sessão de staff, store_settings não é legível (tem dados bancários).
+      // O catálogo/checkout só precisa dos campos públicos (nome, WhatsApp,
+      // coordenadas da loja...) — vêm de public_store_settings(), por cima da
+      // cópia local, sem nunca apagar o que lá está.
+      const pub = await (supabase as any).rpc('public_store_settings', { p_store_id: sid ?? null })
+      if (pub?.data && typeof pub.data === 'object' && Object.keys(pub.data).length > 0) {
+        const local = (() => { try { return JSON.parse(localStorage.getItem('khrismir_settings') || '{}') } catch { return {} } })()
+        lsSet('khrismir_settings', { ...local, ...pub.data })
+      }
+    }
     if (sup.data)    lsSet('khrismir_suppliers', keepLocalRows(sup.data, 'khrismir_suppliers', 'name'))
 
     // Devoluções e fidelização — merge local + Supabase (preserva registos locais
@@ -1089,6 +1100,34 @@ export async function hasCloudSession(): Promise<boolean> {
   }
 }
 
+const PAPEIS_STAFF = new Set(['admin', 'employee', 'gerente', 'super_admin'])
+let staffCache: { uid: string; staff: boolean; at: number } | null = null
+
+/**
+ * Há uma sessão real do Supabase de um membro da EQUIPA? As tabelas internas
+ * (caixa, contabilidade, compras, turnos, clientes...) só aceitam leitura e
+ * escrita de staff (migração 20260826010000). Uma sessão de cliente não serve:
+ * com RLS, um DELETE sem permissão não dá erro (apaga 0 linhas) e a entrada da
+ * fila seria marcada como enviada sem nunca ter chegado — por isso a fila
+ * espera por staff, não por "qualquer sessão".
+ */
+export async function hasStaffSession(): Promise<boolean> {
+  if (!isSupabaseReady() || !supabase) return false
+  try {
+    const { data } = await supabase.auth.getSession()
+    const uid = data.session?.user?.id
+    if (!uid) return false
+    if (staffCache && staffCache.uid === uid && Date.now() - staffCache.at < 60_000) return staffCache.staff
+    const { data: perfil, error } = await supabase.from('profiles').select('role').eq('id', uid).maybeSingle()
+    if (error) return false // não guarda em cache: pode ser falha de rede passageira
+    const staff = PAPEIS_STAFF.has((perfil as any)?.role ?? '')
+    staffCache = { uid, staff, at: Date.now() }
+    return staff
+  } catch {
+    return false
+  }
+}
+
 /** Erro de política RLS do Postgres: quase sempre significa "sem sessão da cloud". */
 export function isRlsError(msg: string): boolean {
   return /row-level security|violates row-level|permission denied/i.test(msg)
@@ -1098,7 +1137,7 @@ export async function drainOutbox(): Promise<void> {
   if (!isElectron() || draining) return
   if (!isSupabaseReady() || !supabase) return
   if (!isCloudOnline()) return // sem ligação a fila espera, guardada no SQLite
-  if (!(await hasCloudSession())) return // espera por uma sessão real; a fila fica guardada
+  if (!(await hasStaffSession())) return // espera por uma sessão real de staff; a fila fica guardada
 
   draining = true
   try {
@@ -1176,7 +1215,7 @@ export type ResultadoSincronizar =
 export async function sincronizarAgora(): Promise<ResultadoSincronizar> {
   if (!(await verificarAgora())) return { estado: 'sem-ligacao' }
   const antes = await contarPendentes()
-  if (!(await hasCloudSession())) return { estado: 'sem-sessao', pendentes: antes }
+  if (!(await hasStaffSession())) return { estado: 'sem-sessao', pendentes: antes }
   await syncPendingStores()
   await drainOutbox()
   const pull = await pullAll()

@@ -33,6 +33,7 @@ import {
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { useNavigate } from 'react-router-dom'
 import { generateSAFTXML, downloadSAFT } from '../utils/saft'
+import { escapeHtml } from '../utils/html'
 import { getAGTConfig, saveAGTConfig, testAGTConnection, isAGTConfigured, type AGTConfig } from '../lib/agt'
 import DeliveryMapPicker from '../components/DeliveryMapPicker'
 import { useAuthStore } from '../stores/useAuthStore'
@@ -1057,11 +1058,11 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
     const win = window.open('', '_blank', 'width=400,height=500')
     if (!win) return
     win.document.write(`<html><body style="text-align:center;font-family:sans-serif;padding:20px">
-      <h2>${p.name}</h2>
+      <h2>${escapeHtml(p.name)}</h2>
       <div id="qr"></div>
-      <p style="font-size:11px;color:#666">ID: ${p.id}</p>
+      <p style="font-size:11px;color:#666">ID: ${escapeHtml(p.id)}</p>
       <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
-      <script>QRCode.toCanvas(document.createElement('canvas'),'product:${p.id}',function(e,c){if(!e){document.getElementById('qr').appendChild(c)}});setTimeout(()=>window.print(),800)</script>
+      <script>QRCode.toCanvas(document.createElement('canvas'),${JSON.stringify('product:' + p.id).replace(/</g, '\\u003c')},function(e,c){if(!e){document.getElementById('qr').appendChild(c)}});setTimeout(()=>window.print(),800)</script>
     </body></html>`)
     win.document.close()
   }

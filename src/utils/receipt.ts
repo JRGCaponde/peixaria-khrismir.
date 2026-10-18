@@ -4,6 +4,7 @@
  */
 import type { Order } from '../types/database'
 import type { StoreSettings } from '../lib/settings'
+import { escapeHtml } from './html'
 
 const COL = 42
 
@@ -82,9 +83,10 @@ export function printReceipt(order: Order, settings: StoreSettings): void {
   rows.push(rcenter('Peixaria Khrismir v1.5'))
   rows.push(''); rows.push(''); rows.push('')
 
-  const html = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8"><title>Talao ${order.order_number}</title>
+  // Texto de largura fixa: escapa-se só aqui no fim, senão "&amp;" desalinhava as colunas.
+  const html = `<!DOCTYPE html><html lang="pt"><head><meta charset="UTF-8"><title>Talao ${escapeHtml(order.order_number)}</title>
 <style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Courier New',Courier,monospace;font-size:12px;line-height:1.4;color:#000;background:#fff;padding:4px 8px;width:80mm}pre{white-space:pre-wrap;font-family:inherit;font-size:inherit}@media print{body{padding:0}@page{margin:2mm;size:80mm auto}}</style>
-</head><body><pre>${rows.join('\n')}</pre></body></html>`
+</head><body><pre>${escapeHtml(rows.join('\n'))}</pre></body></html>`
   const win = window.open('', '_blank', 'width=400,height=600')
   if (!win) return
   win.document.write(html); win.document.close()

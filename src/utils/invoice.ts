@@ -1,5 +1,6 @@
 import type { Order } from '../types/database'
 import type { StoreSettings } from '../lib/settings'
+import { escapeDeep } from './html'
 
 // ── Utilitários ───────────────────────────────────────────────────────────────
 const fmt2 = (n: number) =>
@@ -49,6 +50,8 @@ function amountInWords(amount: number): string {
 
 // ── Talão simples (POS / encomendas sem NIF) ──────────────────────────────────
 export function printInvoice(order: Order, settings: StoreSettings) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  order = escapeDeep(order); settings = escapeDeep(settings)
   const ivaRate  = settings.iva_rate / 100
   const subtotal = order.subtotal ?? order.items.reduce((s, i) => s + i.total_price, 0)
   const delivery = order.delivery_fee ?? 0
@@ -162,6 +165,8 @@ export function printInvoice(order: Order, settings: StoreSettings) {
 
 // ── Factura no formato AGT angolano (para empresas com NIF) ───────────────────
 export function printBusinessInvoice(order: Order, settings: StoreSettings, usdRate = 86.85) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  order = escapeDeep(order); settings = escapeDeep(settings)
   const ivaRate    = settings.iva_rate / 100
   const subtotal   = order.subtotal ?? order.items.reduce((s, i) => s + i.total_price, 0)
   const delivery   = order.delivery_fee ?? 0
@@ -449,6 +454,8 @@ export function printPrimaveraInvoice(
   sale: PrimaveraDocInfo | null,
   settings: StoreSettings,
 ) {
+  // Tudo o que vem de formulários/nuvem é escapado uma vez aqui, antes de entrar no HTML.
+  order = escapeDeep(order); sale = escapeDeep(sale); settings = escapeDeep(settings)
   const docSeries  = sale?.doc_series ?? ''
   const docNumber  = sale?.doc_number ?? ''
   const docType    = sale?.doc_type   ?? 'VD2'
