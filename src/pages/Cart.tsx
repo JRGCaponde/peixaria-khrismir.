@@ -7,7 +7,7 @@ import { getSettings } from '../lib/settings'
 import type { CartItem, Order, PaymentType, DeliveryType, PromoCode, MapReference } from '../types/database'
 import { calcOrderHash } from '../utils/saft'
 import { registerSaleMovement } from '../lib/cashflow'
-import { notifyNewOrder, syncPromos } from '../lib/sync'
+import { notifyNewOrder, usarPromo } from '../lib/sync'
 import { haversineKm, calcDeliveryFee } from '../lib/deliveryPricing'
 import DeliveryMapPicker from '../components/DeliveryMapPicker'
 
@@ -136,7 +136,7 @@ export default function Cart() {
     if (appliedPromo) {
       const promos: PromoCode[] = JSON.parse(localStorage.getItem('khrismir_promos') || '[]')
       const idx = promos.findIndex(p => p.id === appliedPromo.id)
-      if (idx !== -1) { promos[idx].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)); syncPromos(promos) }
+      if (idx !== -1) { promos[idx].uses += 1; localStorage.setItem('khrismir_promos', JSON.stringify(promos)); usarPromo(appliedPromo.id) }
     }
 
     localStorage.removeItem('khrismir_cart')

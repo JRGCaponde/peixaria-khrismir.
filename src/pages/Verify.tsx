@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Search, Package, Truck, CheckCircle, Clock, XCircle, ChefHat } from 'lucide-react'
 import { toast } from 'sonner'
 import type { Order, OrderStatus } from '../types/database'
+import { supabase, isSupabaseReady } from '../lib/supabase'
 
 const statusConfig: Record<OrderStatus, { label: string; color: string; icon: React.ElementType }> = {
   pendente: { label: 'Pendente', color: 'bg-yellow-100 text-yellow-800', icon: Clock },
@@ -17,15 +18,29 @@ export default function Verify() {
   const [order, setOrder] = useState<Order | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const searchOrder = () => {
+  const searchOrder = async () => {
     if (!orderNumber.trim()) {
       toast.error('Digite o número do pedido')
       return
     }
 
     setLoading(true)
-    
-    // Buscar nos pedidos
+
+    // Na nuvem: verificar_pedido() devolve só o estado e os artigos do pedido
+    // (nunca nome, telefone ou morada). Antes esta página dependia de trazer as
+    // últimas encomendas de TODOS os clientes para o dispositivo de quem visita.
+    if (isSupabaseReady() && supabase) {
+      try {
+        const { data, error } = await (supabase as any).rpc('verificar_pedido', { p_order_number: orderNumber.trim() })
+        if (!error && data) {
+          setOrder({ ...data, items: data.items ?? [] } as Order)
+          setLoading(false)
+          return
+        }
+      } catch { /* sem ligação — tenta os pedidos guardados neste dispositivo */ }
+    }
+
+    // Pedidos guardados neste dispositivo (ex: o próprio cliente, offline)
     const storedOrders = localStorage.getItem('khrismir_orders')
     if (storedOrders) {
       const orders: Order[] = JSON.parse(storedOrders)

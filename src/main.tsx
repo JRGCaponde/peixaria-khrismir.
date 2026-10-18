@@ -7,7 +7,11 @@ import { pullAll, startOutboxDrain, startPendingStoresSync } from './lib/sync'
 import { isSupabaseReady } from './lib/supabase'
 import { startRealtime } from './lib/realtime'
 import { useAuthStore } from './stores/useAuthStore'
-import { isElectron } from './lib/localDB'
+import { setOutboxUserRole } from './lib/localDB'
+
+// A fila offline do browser só guarda escritas de quem é da equipa (ver localDB.ts).
+setOutboxUserRole(useAuthStore.getState().user?.role)
+useAuthStore.subscribe(s => setOutboxUserRole(s.user?.role))
 
 // Sincronizar dados e arrancar Realtime. A sessão de FUNCIONÁRIO/ADMIN nunca é
 // restaurada automaticamente — tem sempre de introduzir as credenciais quando
@@ -19,7 +23,7 @@ async function boot() {
   // SQLite local (ver lib/localDB.ts) e a fila de envio (startOutboxDrain) trata
   // de sincronizar assim que a ligação voltar. Por isso não bloqueia no pullAll.
   startPendingStoresSync()
-  if (isElectron()) startOutboxDrain()
+  startOutboxDrain() // Electron (SQLite) e browser (localStorage)
   if (isSupabaseReady()) {
     await pullAll()      // Primeiro pull: traz tudo do Supabase para localStorage/SQLite
     startRealtime()      // A partir daqui qualquer mudança no Supabase chega em tempo real

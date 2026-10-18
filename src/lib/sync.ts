@@ -6,7 +6,7 @@
 
 import { supabase, isSupabaseReady } from './supabase'
 import { getCurrentStoreId, BUSINESS_KEYS } from './storeContext'
-import { isElectron, enqueueUpsert, enqueueDelete } from './localDB'
+import { isElectron, isEquipaActual, enqueueUpsert, enqueueDelete, outbox, type OutboxEntry } from './localDB'
 import { isCloudOnline, aoReligar, verificarAgora } from './connectivity'
 import type { Order, Product, Category, CashFlow, Purchase, DeliveryZone, PromoCode } from '../types/database'
 import type { StoreSettings } from './settings'
@@ -292,10 +292,6 @@ export async function pullAll(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-type OutboxEntry = {
-  id: number; table_name: string; row_id: string; op: 'upsert' | 'delete'
-  payload: any; store_id: string | null
-}
 
 // tabela da fila offline → chave do localStorage onde a app a lê
 const OUTBOX_LS_KEY: Record<string, string> = {
@@ -309,21 +305,20 @@ const OUTBOX_LS_KEY: Record<string, string> = {
 }
 
 /**
- * Electron: o pullAll() substitui os dados locais pelos da nuvem. Tudo o que foi
+ * Electron e browser: o pullAll() substitui os dados locais pelos da nuvem. Tudo o que foi
  * escrito mas ainda não chegou ao Supabase (fila sync_outbox — por falta de
  * internet ou de sessão online) desaparecia do ecrã a cada arranque. Esta função
  * volta a aplicar a fila por cima: o último pedido de cada linha vence
  * (gravar = inserir/actualizar, apagar = remover).
  */
 export async function applyPendingOutbox(): Promise<void> {
-  if (!isElectron()) return
   const sid = getCurrentStoreId()
   if (!sid) return
   let pending: OutboxEntry[]
   try {
     // Entradas anteriores à separação por loja não têm dono: ficam com a loja aberta.
-    await (window as any).electronAPI.db.adoptOrphans(sid)
-    pending = await (window as any).electronAPI.db.getPendingOutbox()
+    await outbox().adoptOrphans(sid)
+    pending = await outbox().getPendingOutbox()
   } catch { return }
   // Só o trabalho DESTA loja — o das outras lojas não pode aparecer aqui.
   pending = (pending ?? []).filter(e => e.store_id === sid)
@@ -667,7 +662,14 @@ export async function syncProducts(products: Product[]): Promise<{ ok: boolean; 
  * Actualiza também o localStorage com o valor autoritativo do servidor.
  */
 export async function syncProductStock(productId: string, quantity: number): Promise<number | null> {
-  if (!isSupabaseReady() || !supabase) return null
+  // Se a baixa não chegar ao servidor (sem internet ou sem sessão de staff), fica na
+  // fila para ser feita mais tarde — antes perdia-se e o stock na nuvem ficava errado.
+  // id único: cada venda é uma baixa própria, nunca substitui outra.
+  const enfileirar = () => enqueueUpsert(STOCK_QUEUE, [{
+    id: `${productId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    product_id: productId, quantity,
+  }])
+  if (!isSupabaseReady() || !supabase) { enfileirar(); return null }
   try {
     const { data, error } = await supabase.rpc('decrement_product_stock', {
       p_product_id: productId,
@@ -676,6 +678,8 @@ export async function syncProductStock(productId: string, quantity: number): Pro
     })
     if (error || !data || !data.length) {
       console.warn('[syncProductStock] RPC error:', error?.message)
+      // Sem linhas devolvidas = o RLS não deixou actualizar (sem sessão de staff).
+      enfileirar()
       return null
     }
     const newStock: number = data[0].stock_quantity
@@ -691,6 +695,7 @@ export async function syncProductStock(productId: string, quantity: number): Pro
     return newStock
   } catch (e: any) {
     console.warn('[syncProductStock] exception:', e?.message)
+    enfileirar()
     return null
   }
 }
@@ -708,13 +713,10 @@ export async function syncCategories(categories: Category[]) {
   if (error) console.error('[syncCategories]', error.message)
 }
 
-export async function syncOrder(order: Order): Promise<boolean> {
-  if (!isSupabaseReady() || !supabase) return false
-  if (!getCurrentStoreId()) { console.error('[syncOrder] Sem loja seleccionada — sincronização cancelada'); return false }
-  const o = order as any
+function buildOrderRow(o: any, sid: string) {
   // customer_id deve ser UUID válido (Supabase Auth) — caso contrário null
   const customerId = o.customer_id && UUID_REGEX.test(o.customer_id) ? o.customer_id : null
-  const orderRow = {
+  return {
     id: o.id, order_number: o.order_number,
     customer_id: customerId,
     customer_name: o.customer_name ?? '', customer_phone: o.customer_phone ?? '',
@@ -731,21 +733,47 @@ export async function syncOrder(order: Order): Promise<boolean> {
     payment_status: o.payment_status ?? 'pago', paid_at: o.paid_at ?? null,
     payment_split: o.payment_split ?? null,
     created_at: o.created_at, updated_at: o.updated_at,
-    store_id: getCurrentStoreId(),
+    store_id: sid,
   }
-  enqueueUpsert('orders', [orderRow]) // fila local (Electron)
+}
+
+function buildItemRows(o: any, sid: string) {
+  return (o.items || []).map((i: any) => ({
+    id: i.id, order_id: o.id, product_id: i.product_id ?? '',
+    product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
+    unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
+    total_price: i.total_price ?? 0, store_id: sid,
+  }))
+}
+
+export async function syncOrder(order: Order): Promise<boolean> {
+  if (!isSupabaseReady() || !supabase) return false
+  const sid = getCurrentStoreId()
+  if (!sid) { console.error('[syncOrder] Sem loja seleccionada — sincronização cancelada'); return false }
+  const orderRow = buildOrderRow(order, sid)
+  const itemRows = buildItemRows(order, sid)
+
+  // Encomenda feita por um cliente (catálogo/carrinho) ou por um visitante: orders
+  // só aceita escrita de staff, por isso vai pelo RPC registar_encomenda, que a cria
+  // sempre como "pendente" e nunca altera uma encomenda que já exista.
+  if (!isEquipaActual()) {
+    const { error } = await (supabase as any).rpc('registar_encomenda', { p_order: orderRow, p_items: itemRows })
+    // A função só existe depois da migração 20260827000000. Até lá (app nova, base
+    // ainda antiga) grava como antes, para nenhuma encomenda online se perder.
+    const semFuncao = error && (error.code === 'PGRST202' || error.code === '42883')
+    if (!semFuncao) {
+      if (error) { console.warn('Sync order error:', error.message); return false }
+      return true
+    }
+  }
+
+  // Equipa: a encomenda E os itens entram na fila antes de tentar enviar — antes os
+  // itens só eram enfileirados se a encomenda passasse, e perdiam-se sem sessão.
+  enqueueUpsert('orders', [orderRow]) // só enfileira para a equipa (ver localDB.ts)
+  if (itemRows.length) enqueueUpsert('order_items', itemRows)
   const { error } = await supabase.from('orders').upsert(orderRow, { onConflict: 'id' })
   if (error) { console.warn('Sync order error:', error.message); return false }
-  const items = o.items || []
-  if (items.length) {
-    const sid = getCurrentStoreId()
-    const itemRows = items.map((i: any) => ({
-      id: i.id, order_id: order.id, product_id: i.product_id ?? '',
-      product_name: i.product_name ?? '', quantity: i.quantity ?? 0,
-      unit_price: i.unit_price ?? 0, preparation: i.preparation ?? '',
-      total_price: i.total_price ?? 0, store_id: sid,
-    }))
-    enqueueUpsert('order_items', itemRows) // fila local (Electron)
+  if (itemRows.length) {
     const { error: ie } = await supabase.from('order_items').upsert(itemRows, { onConflict: 'id' })
     if (ie) { console.warn('Sync order items error:', ie.message); return false }
   }
@@ -753,6 +781,10 @@ export async function syncOrder(order: Order): Promise<boolean> {
 }
 
 export async function syncOrderStatus(id: string, status: string) {
+  // Fila: a linha inteira (um upsert só com id+status falha no NOT NULL de order_number).
+  const sid = getCurrentStoreId()
+  const local = ls<any[]>('khrismir_orders', []).find(o => o.id === id)
+  if (local && sid) enqueueUpsert('orders', [buildOrderRow({ ...local, status }, sid)])
   if (!isSupabaseReady() || !supabase) return
   const { error } = await supabase.from('orders').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
   if (error) console.error('[syncOrderStatus]', error.message)
@@ -924,6 +956,23 @@ export async function deleteStorePermanent(id: string): Promise<{ ok: boolean; e
   return { ok: true }
 }
 
+/**
+ * Conta um uso de um código de desconto (checkout do catálogo). promo_codes só
+ * aceita escrita de staff — o cliente usa o RPC usar_promo, que só soma 1.
+ */
+export async function usarPromo(promoId: string): Promise<void> {
+  if (!isSupabaseReady() || !supabase) return
+  const { error } = await (supabase as any).rpc('usar_promo', { p_promo_id: promoId })
+  if (!error) return
+  if (error.code === 'PGRST202' || error.code === '42883') {
+    // Base ainda sem a migração 20260827000000: grava como antes.
+    const promo = ls<PromoCode[]>('khrismir_promos', []).find(p => p.id === promoId)
+    if (promo) await syncPromos([promo])
+    return
+  }
+  console.error('[usarPromo]', error.message)
+}
+
 export async function syncPromos(promos: PromoCode[]): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
@@ -1083,6 +1132,9 @@ const UPSERT_MAP: Record<string, (row: any, sid: string) => any> = {
 
 let draining = false
 
+/** "Tabela" da fila para baixas de stock por fazer (RPC decrement_product_stock). */
+const STOCK_QUEUE = '__baixa_stock'
+
 /**
  * Há uma sessão real do Supabase (conta registada na nuvem)? As tabelas internas
  * (caixa, contabilidade, compras, turnos...) só aceitam upsert/update/delete de
@@ -1134,7 +1186,7 @@ export function isRlsError(msg: string): boolean {
 }
 
 export async function drainOutbox(): Promise<void> {
-  if (!isElectron() || draining) return
+  if (draining) return
   if (!isSupabaseReady() || !supabase) return
   if (!isCloudOnline()) return // sem ligação a fila espera, guardada no SQLite
   if (!(await hasStaffSession())) return // espera por uma sessão real de staff; a fila fica guardada
@@ -1142,8 +1194,8 @@ export async function drainOutbox(): Promise<void> {
   draining = true
   try {
     const current = getCurrentStoreId()
-    if (current) await (window as any).electronAPI.db.adoptOrphans(current) // entradas antigas, sem loja
-    const pending: OutboxEntry[] = await (window as any).electronAPI.db.getPendingOutbox()
+    if (current) await outbox().adoptOrphans(current) // entradas antigas, sem loja
+    const pending: OutboxEntry[] = await outbox().getPendingOutbox()
     if (!pending.length) return
 
     const synced: number[] = []
@@ -1154,6 +1206,17 @@ export async function drainOutbox(): Promise<void> {
       // cf_accounts/cf_categories/cf_movements guardam a linha em bruto (precisa de
       // mapear para o formato do Supabase); as restantes tabelas já guardam a linha
       // pronta a enviar (foi construída antes de ser enfileirada), usa-se tal e qual.
+      // Baixa de stock pendente (ver syncProductStock): não é uma linha, é uma chamada
+      // ao RPC atómico — por isso vai à parte e nunca é "substituída" por outra.
+      if (entry.table_name === STOCK_QUEUE) {
+        const p = entry.payload ?? {}
+        const { error } = await supabase.rpc('decrement_product_stock', {
+          p_product_id: p.product_id, p_quantity: p.quantity, p_store_id: entrySid,
+        })
+        if (error) { console.error('[drainOutbox] baixa de stock', error.message); continue }
+        synced.push(entry.id)
+        continue
+      }
       const mapRow = UPSERT_MAP[entry.table_name]
       const row = mapRow ? mapRow(entry.payload, entrySid) : { ...entry.payload, store_id: entry.payload?.store_id ?? entrySid }
 
@@ -1175,15 +1238,14 @@ export async function drainOutbox(): Promise<void> {
       synced.push(entry.id)
     }
 
-    if (synced.length) await (window as any).electronAPI.db.markSynced(synced)
+    if (synced.length) await outbox().markSynced(synced)
   } finally {
     draining = false
   }
 }
 
-/** Arranca o envio periódico da fila offline — chamar uma vez, no arranque da app (Electron). */
+/** Arranca o envio periódico da fila offline — chamar uma vez, no arranque da app. */
 export function startOutboxDrain() {
-  if (!isElectron()) return
   drainOutbox()
   setInterval(drainOutbox, 30_000)
   // Voltou a haver ligação (verificada de verdade, ver connectivity.ts): envia a fila
@@ -1194,11 +1256,10 @@ export function startOutboxDrain() {
   })
 }
 
-/** Quantas alterações locais ainda esperam para ir para a nuvem (só no Electron). */
+/** Quantas alterações locais ainda esperam para ir para a nuvem. */
 export async function contarPendentes(): Promise<number> {
-  if (!isElectron()) return 0
   try {
-    const p = await (window as any).electronAPI.db.getPendingOutbox()
+    const p = await outbox().getPendingOutbox()
     return Array.isArray(p) ? p.length : 0
   } catch { return 0 }
 }
@@ -1238,9 +1299,9 @@ export async function clearJournalEntries(ids: string[] = []): Promise<{ ok: boo
   // Diário "voltava" depois de zerado. Junta os ids que a fila ainda tem para esta loja.
   const todos = new Set(ids)
   const lojaAtual = getCurrentStoreId()
-  if (isElectron() && lojaAtual) {
+  if (lojaAtual) {
     try {
-      const pend: OutboxEntry[] = await (window as any).electronAPI.db.getPendingOutbox()
+      const pend: OutboxEntry[] = await outbox().getPendingOutbox()
       pend.filter(e => e.table_name === 'journal_entries' && e.store_id === lojaAtual).forEach(e => todos.add(e.row_id))
     } catch { /* sem fila — só os ids recebidos */ }
   }

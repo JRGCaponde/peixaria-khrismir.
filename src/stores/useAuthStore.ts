@@ -17,7 +17,9 @@ interface User {
 interface AuthState {
   user: User | null
   isAuthenticated: boolean
-  login: (email: string, password: string) => Promise<{ ok: boolean; lockedUntil?: number }>
+  login: (email: string, password: string) => Promise<{ ok: boolean; lockedUntil?: number; mustChangePassword?: boolean }>
+  /** Troca a password de fábrica (admin123/func123) de uma conta local e entra. */
+  changeFactoryPassword: (email: string, oldPassword: string, newPassword: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   requestReset: (email: string) => string | null
   resetPassword: (email: string, newPassword: string, code: string) => boolean
@@ -45,27 +47,40 @@ function clearAttempts(email: string) {
   const a = getAttempts(); delete a[email.toLowerCase()]; saveAttempts(a)
 }
 
-// ── Utilizadores padrão localStorage ──────────────────────────
-export function ensureDefaultUsers() {
-  const defaults = [
-    { id: 'admin-khrismir-001',    email: 'admin@khrismir.ao',       password: CryptoJS.SHA256('admin123').toString(), full_name: 'Administrador',     phone: '+244 929 970 984', role: 'admin',    created_at: '2025-01-01T00:00:00.000Z' },
-    { id: 'employee-khrismir-001', email: 'funcionario@khrismir.ao', password: CryptoJS.SHA256('func123').toString(),  full_name: 'Funcionário Padrão', phone: '',                  role: 'employee', created_at: '2025-01-01T00:00:00.000Z' },
-  ]
-  const stored: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
-  let changed = false
-  for (const d of defaults) {
-    if (!stored.find((u: any) => u.id === d.id)) { stored.push(d); changed = true }
-  }
-  if (changed) localStorage.setItem('khrismir_clients', JSON.stringify(stored))
+// ── Contas locais ──────────────────────────────────────────────
+// A app criava em todos os dispositivos admin@khrismir.ao / admin123 e
+// funcionario@khrismir.ao / func123. Essas passwords estão no código-fonte,
+// por isso qualquer pessoa entrava como admin no modo local. Já não se criam.
+// Os dispositivos que ainda as têm são obrigados a trocar a password no
+// primeiro login (mustChangePassword), e a password de fábrica deixa de abrir.
+//
+// Num dispositivo novo, o primeiro login tem de ser com internet e com uma
+// conta real do Supabase. Esse login fica guardado neste dispositivo
+// (guardarContaLocal), e a partir daí a mesma conta também entra offline.
+const SENHAS_DE_FABRICA = new Set([
+  CryptoJS.SHA256('admin123').toString(),
+  CryptoJS.SHA256('func123').toString(),
+])
+const PAPEIS_EQUIPA = ['admin', 'employee', 'gerente', 'super_admin']
 
-  const emps: any[] = JSON.parse(localStorage.getItem('khrismir_employees') || '[]')
-  let empChanged = false
-  for (const d of defaults) {
-    if (!emps.find((u: any) => u.id === d.id)) { emps.push(d); empChanged = true }
-  }
-  if (empChanged) localStorage.setItem('khrismir_employees', JSON.stringify(emps))
+function lerLista(key: string): any[] {
+  try { return JSON.parse(localStorage.getItem(key) || '[]') } catch { return [] }
 }
-ensureDefaultUsers()
+
+/** Grava (ou actualiza) uma conta nas listas locais usadas pelo login offline. */
+function guardarContaLocal(conta: any) {
+  for (const key of ['khrismir_clients', 'khrismir_employees']) {
+    if (key === 'khrismir_employees' && !PAPEIS_EQUIPA.includes(conta.role)) continue
+    const lista = lerLista(key)
+    const email = (conta.email ?? '').toLowerCase()
+    const idx = lista.findIndex((u: any) => u.id === conta.id)
+    // Uma conta antiga com o mesmo email (ex: a semeada admin@khrismir.ao) deixa de
+    // valer: senão continuava a abrir com a password de fábrica.
+    const resto = lista.filter((u: any, i: number) => i !== idx && !((u.email ?? '').toLowerCase() === email && SENHAS_DE_FABRICA.has(u.password)))
+    const novo = idx >= 0 ? { ...lista[idx], ...conta } : conta
+    localStorage.setItem(key, JSON.stringify([...resto, novo]))
+  }
+}
 
 // ── Store ──────────────────────────────────────────────────────
 // SEM persistência: o utilizador tem sempre de introduzir as credenciais
@@ -138,6 +153,11 @@ export const useAuthStore = create<AuthState>()(
             }
             set({ user: u, isAuthenticated: true })
             startPresenceTracking(u)
+            // Equipa: guarda a conta neste dispositivo para o login funcionar offline
+            // (é o que substitui as contas de fábrica). Clientes não precisam.
+            if (PAPEIS_EQUIPA.includes(u.role)) {
+              try { guardarContaLocal({ ...u, password: CryptoJS.SHA256(password).toString(), store_id: profile?.store_id ?? null, supabase_synced: true }) } catch { /* não fatal */ }
+            }
             // Auto-definir a loja activa a partir do perfil (resolve getCurrentStoreId() null)
             if (profile?.store_id) {
               try {
@@ -155,11 +175,12 @@ export const useAuthStore = create<AuthState>()(
         }
 
         // ── Via localStorage (sem Supabase ou fallback para utilizadores locais) ──
-        ensureDefaultUsers()
         const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
         const hashed = CryptoJS.SHA256(password).toString()
         const found = clients.find((u: any) => (u.email ?? '').toLowerCase() === key && u.password === hashed)
         if (!found) { recordFail(); return { ok: false } }
+        // Password de fábrica: é pública, por isso não abre a conta — obriga a trocar.
+        if (SENHAS_DE_FABRICA.has(found.password)) return { ok: false, mustChangePassword: true }
         clearAttempts(email)
         const { password: _pw, ...safe } = found
         set({ user: safe as User, isAuthenticated: true })
@@ -168,6 +189,23 @@ export const useAuthStore = create<AuthState>()(
         // da próxima vez que abrir a app neste dispositivo (ver restoreClientSession).
         if (safe.role === 'client') localStorage.setItem('khrismir_client_local_id', safe.id)
         return { ok: true }
+      },
+
+      changeFactoryPassword: async (email, oldPassword, newPassword) => {
+        const key = email.toLowerCase()
+        const antiga = CryptoJS.SHA256(oldPassword).toString()
+        if (!SENHAS_DE_FABRICA.has(antiga)) return { ok: false, error: 'Esta conta não usa a password de fábrica.' }
+        if (newPassword.length < 8) return { ok: false, error: 'A nova password tem de ter pelo menos 8 caracteres.' }
+        const nova = CryptoJS.SHA256(newPassword).toString()
+        if (SENHAS_DE_FABRICA.has(nova)) return { ok: false, error: 'Escolha uma password diferente da de fábrica.' }
+        const conta = lerLista('khrismir_clients').find((u: any) => (u.email ?? '').toLowerCase() === key && u.password === antiga)
+        if (!conta) return { ok: false, error: 'Email ou password incorrectos.' }
+        for (const k of ['khrismir_clients', 'khrismir_employees']) {
+          const lista = lerLista(k).map((u: any) => u.id === conta.id ? { ...u, password: nova } : u)
+          localStorage.setItem(k, JSON.stringify(lista))
+        }
+        const r = await _get().login(email, newPassword)
+        return r.ok ? { ok: true } : { ok: false, error: 'Password trocada, mas o login falhou. Tente entrar com a nova password.' }
       },
 
       logout: async () => {
@@ -216,8 +254,11 @@ export const useAuthStore = create<AuthState>()(
           supabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/auth?view=reset` })
           return '__supabase__'
         }
+        // O código aparece no próprio ecrã (não há email offline) — por isso só serve para
+        // clientes. Contas da equipa recuperam-se com internet ou por um administrador;
+        // senão qualquer pessoa repunha a password do admin neste dispositivo.
         const clients: any[] = JSON.parse(localStorage.getItem('khrismir_clients') || '[]')
-        if (!clients.find((c: any) => (c.email ?? '').toLowerCase() === email.toLowerCase())) return null
+        if (!clients.find((c: any) => (c.email ?? '').toLowerCase() === email.toLowerCase() && c.role === 'client')) return null
         const code = Math.floor(100000 + Math.random() * 900000).toString()
         const resets: Record<string, { code: string; expires: number }> = JSON.parse(localStorage.getItem('khrismir_resets') || '{}')
         resets[email.toLowerCase()] = { code, expires: Date.now() + 30 * 60 * 1000 }

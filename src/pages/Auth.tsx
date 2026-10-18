@@ -7,7 +7,7 @@ import CryptoJS from 'crypto-js'
 import { supabase, isSupabaseReady } from '../lib/supabase'
 import { getSettings } from '../lib/settings'
 
-type View = 'login' | 'register' | 'forgot' | 'reset'
+type View = 'login' | 'register' | 'forgot' | 'reset' | 'trocar'
 
 export default function Auth() {
   const [searchParams] = useSearchParams()
@@ -17,7 +17,7 @@ export default function Auth() {
   const [form, setForm] = useState({ email: '', password: '', name: '', phone: '', code: '', newPass: '', confirmPass: '' })
   const [lockedUntil, setLockedUntil] = useState<number | null>(null)
   const [resetCode, setResetCode] = useState<string | null>(null)
-  const { login, requestReset, resetPassword } = useAuthStore()
+  const { login, requestReset, resetPassword, changeFactoryPassword } = useAuthStore()
   const navigate = useNavigate()
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -29,17 +29,35 @@ export default function Auth() {
     }
     const result = await login(form.email, form.password)
     if (result.ok) {
-      const user = useAuthStore.getState().user
-      toast.success(`Bem-vindo, ${user?.full_name}!`)
-      if (user?.role === 'admin') navigate('/admin')
-      else if (user?.role === 'employee') navigate('/pos')
-      else navigate('/catalog')
+      irParaInicio()
+    } else if (result.mustChangePassword) {
+      setView('trocar')
+      setForm(f => ({ ...f, newPass: '', confirmPass: '' }))
+      toast.warning('Esta conta ainda usa a password de fábrica. Defina uma nova para continuar.')
     } else if (result.lockedUntil) {
       setLockedUntil(result.lockedUntil)
       toast.error('Demasiadas tentativas. Conta bloqueada por 15 minutos.')
     } else {
       toast.error('Email ou senha incorretos')
     }
+  }
+
+  const irParaInicio = () => {
+    const user = useAuthStore.getState().user
+    toast.success(`Bem-vindo, ${user?.full_name}!`)
+    if (user?.role === 'admin') navigate('/admin')
+    else if (user?.role === 'employee') navigate('/pos')
+    else navigate('/catalog')
+  }
+
+  // Conta local com password de fábrica (admin123/func123): tem de ser trocada antes de entrar.
+  const handleTrocar = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (form.newPass !== form.confirmPass) { toast.error('As senhas não coincidem'); return }
+    const r = await changeFactoryPassword(form.email, form.password, form.newPass)
+    if (!r.ok) { toast.error(r.error ?? 'Não foi possível trocar a senha'); return }
+    setForm(f => ({ ...f, password: '', newPass: '', confirmPass: '' }))
+    irParaInicio()
   }
 
   const handleRegister = async (e: React.FormEvent) => {
@@ -147,6 +165,7 @@ export default function Auth() {
             {view === 'login'    ? 'Entrar'             :
              view === 'register' ? 'Criar Conta'        :
              view === 'forgot'   ? 'Recuperar Senha'    :
+             view === 'trocar'   ? 'Definir Nova Senha' :
                                    'Nova Senha'}
           </h2>
           <p className="text-cyan-100 text-sm mt-1">{getSettings().name}</p>
@@ -256,6 +275,36 @@ export default function Auth() {
               Gerar Código
             </button>
             <button type="button" onClick={() => setView('login')}
+              className="w-full flex items-center justify-center gap-2 text-gray-500 text-sm hover:text-gray-700">
+              <ArrowLeft className="w-4 h-4" /> Voltar ao login
+            </button>
+          </form>
+        )}
+
+        {/* Trocar password de fábrica */}
+        {view === 'trocar' && (
+          <form onSubmit={handleTrocar} className="p-8 space-y-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+              A conta <strong>{form.email}</strong> usa a password de fábrica, que é pública.
+              Defina uma password nova (mínimo 8 caracteres) para continuar.
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nova Senha</label>
+              <input type="password" value={form.newPass} onChange={e => setForm(f => ({ ...f, newPass: e.target.value }))}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-cyan-500"
+                placeholder="Mínimo 8 caracteres" required minLength={8} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Confirmar Nova Senha</label>
+              <input type="password" value={form.confirmPass} onChange={e => setForm(f => ({ ...f, confirmPass: e.target.value }))}
+                className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-cyan-500"
+                placeholder="Repetir nova senha" required />
+            </div>
+            <button type="submit"
+              className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 text-white py-3 rounded-xl font-semibold hover:from-cyan-700 hover:to-blue-700 transition">
+              Guardar e Entrar
+            </button>
+            <button type="button" onClick={() => { setView('login'); setForm(f => ({ ...f, password: '', newPass: '', confirmPass: '' })) }}
               className="w-full flex items-center justify-center gap-2 text-gray-500 text-sm hover:text-gray-700">
               <ArrowLeft className="w-4 h-4" /> Voltar ao login
             </button>
