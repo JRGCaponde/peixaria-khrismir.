@@ -384,9 +384,9 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
   const details: string[] = []
   let ok = true
 
-  const upsert = async (table: string, rows: any[], logName: string) => {
+  const upsert = async (table: string, rows: any[], logName: string, onConflict = 'id') => {
     if (!rows.length) { details.push(`${logName}: sem dados`); return }
-    const { error } = await supabase!.from(table).upsert(rows, { onConflict: 'id' })
+    const { error } = await supabase!.from(table).upsert(rows, { onConflict })
     if (error) { details.push(`❌ ${logName}: ${error.message}`); ok = false }
     else details.push(`✅ ${logName}: ${rows.length} registos`)
   }
@@ -560,11 +560,11 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
     store_id: sid,
   })), 'Promoções')
 
-  await upsert('suppliers', suppliers.map(s => ({
+  await upsert('suppliers', umPorNome(suppliers).map(s => ({
     id: s.id, name: s.name, nif: s.nif ?? '', phone: s.phone ?? '',
     email: s.email ?? '', address: s.address ?? '', notes: s.notes ?? '',
     created_at: s.created_at, store_id: sid,
-  })), 'Fornecedores')
+  })), 'Fornecedores', 'name,store_id')
 
   await upsert('returns', returns_.map(r => ({
     id: r.id, order_id: r.order_id ?? '', order_number: r.order_number,
@@ -1027,13 +1027,30 @@ export async function syncPromos(promos: PromoCode[]): Promise<{ ok: boolean; er
   return { ok: true }
 }
 
+/**
+ * Fornecedores: a nuvem só aceita um por nome em cada loja (suppliers_name_store_id_key).
+ * Este dispositivo chegou a ter 3 cópias do mesmo fornecedor com ids diferentes, e o
+ * envio falhava sempre com "duplicate key". Envia-se um por nome (o mais recente) e, se
+ * a nuvem já tiver esse nome com outro id, actualiza-se essa linha em vez de dar erro.
+ * Nada referencia o id do fornecedor (as compras guardam o nome), por isso é seguro.
+ */
+function umPorNome<T extends { name?: string; created_at?: string }>(rows: T[]): T[] {
+  const porNome = new Map<string, T>()
+  for (const r of rows) {
+    const k = (r.name ?? '').trim().toLowerCase()
+    const atual = porNome.get(k)
+    if (!atual || (r.created_at ?? '') > (atual.created_at ?? '')) porNome.set(k, r)
+  }
+  return [...porNome.values()]
+}
+
 export async function syncSuppliers(suppliers: any[]): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncSuppliers] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
-  const supplierRows = suppliers.map(s => ({ ...s, store_id: sid }))
+  const supplierRows = umPorNome(suppliers).map(s => ({ ...s, store_id: sid }))
   const marca = await enqueueUpsert('suppliers', supplierRows) // fila local (Electron)
-  const { error } = await supabase.from('suppliers').upsert(supplierRows, { onConflict: 'id' })
+  const { error } = await supabase.from('suppliers').upsert(supplierRows, { onConflict: 'name,store_id' })
   if (!error) confirmarEnvio('suppliers', supplierRows, marca)
   if (error) { console.error('[syncSuppliers]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
@@ -1293,7 +1310,7 @@ export async function drainOutbox(): Promise<void> {
           ? (row[COM_STOCK]
               ? await supabase.from('products').upsert((({ [COM_STOCK]: _m, ...r }) => r)(row), { onConflict: 'id' })
               : await enviarProdutoDaFila(row))
-          : await supabase.from(entry.table_name).upsert(row, { onConflict: 'id' })
+          : await supabase.from(entry.table_name).upsert(row, { onConflict: entry.table_name === 'suppliers' ? 'name,store_id' : 'id' })
 
       if (error) {
         if (error.code === '23505') {
