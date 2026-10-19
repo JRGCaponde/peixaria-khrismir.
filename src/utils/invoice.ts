@@ -184,7 +184,10 @@ export function printBusinessInvoice(order: Order, settings: StoreSettings, usdR
   const timeStr  = dt.toLocaleTimeString('pt-AO', { hour: '2-digit', minute: '2-digit' })
 
   // Número do documento: FT FA.2026/183 (vendas normais) ou FA/FP 2026/001 (facturas manuais)
-  const seq = order.order_number.includes('/') ? order.order_number : `${year}/${order.order_number}`
+  // Facturas FA/FP novas já guardam a série no número ("FA 2026/001") — não a repetir.
+  const comSerie = !!order.doc_type && order.order_number.startsWith(`${order.doc_type} `)
+  const numero = comSerie ? order.order_number.slice(order.doc_type!.length + 1) : order.order_number
+  const seq = numero.includes('/') ? numero : `${year}/${numero}`
   const isFP = order.doc_type === 'FP'
   const docRef = order.doc_type ? `${order.doc_type} ${seq}` : `FT FA.${seq}`
 

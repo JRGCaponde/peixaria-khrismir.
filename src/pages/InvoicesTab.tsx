@@ -26,6 +26,10 @@ function loadClients(): ClientLite[] {
   try { return JSON.parse(localStorage.getItem('khrismir_clients') || '[]') } catch { return [] }
 }
 
+// O número guardado leva a série à frente ("FA 2026/001", "FP 2026/001"). O POS usa
+// "2026/001" com outro contador, e a base de dados exige números de encomenda únicos:
+// sem a série, a factura FA 2026/001 batia com a venda POS 2026/001 e nunca chegava à
+// nuvem. O número impresso não muda (já era "FA 2026/001").
 function nextDocNumber(docType: DocType): string {
   const key = docType === 'FA' ? 'khrismir_fa_counter' : 'khrismir_fp_counter'
   const year = new Date().getFullYear()
@@ -33,10 +37,10 @@ function nextDocNumber(docType: DocType): string {
     const counter = JSON.parse(localStorage.getItem(key) || 'null')
     const seq = counter?.year === year ? counter.next : 1
     localStorage.setItem(key, JSON.stringify({ year, next: seq + 1 }))
-    return `${year}/${String(seq).padStart(3, '0')}`
+    return `${docType} ${year}/${String(seq).padStart(3, '0')}`
   } catch {
     localStorage.setItem(key, JSON.stringify({ year, next: 2 }))
-    return `${year}/001`
+    return `${docType} ${year}/001`
   }
 }
 
@@ -155,7 +159,7 @@ export default function InvoicesTab({ products, setProducts }: { products: Produ
                     </div>
                     <div className="min-w-0">
                       <p className="font-bold text-sm truncate flex items-center gap-1.5">
-                        <span>{o.doc_type} {o.order_number} — {o.customer_name || 'Consumidor Final'}</span>
+                        <span>{o.order_number.startsWith(`${o.doc_type} `) ? o.order_number : `${o.doc_type} ${o.order_number}`} — {o.customer_name || 'Consumidor Final'}</span>
                         {o.payment_status === 'pendente' && (
                           <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 shrink-0">FIADO</span>
                         )}
