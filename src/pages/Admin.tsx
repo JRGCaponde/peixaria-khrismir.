@@ -23,7 +23,7 @@ import { iniciarIvaZero } from '../lib/accounting'
 import { registerPurchaseMovement, registerCreditPurchase, getCashFlowSummary, syncAllData, migrateExistingData, cancelSaleMovement, cancelPurchaseMovement } from '../lib/cashflow'
 import {
   syncOrderStatus, pullAll, pushAll,
-  syncProducts, syncCategories, syncPromos, syncSettings,
+  syncProducts, ajustarStock, syncCategories, syncPromos, syncSettings,
   syncPurchases, deletePurchases, syncSuppliers, deleteSupplier, clearAllData,
   deleteProduct, deleteCategory, deletePromo,
   syncStore, deleteStorePermanent, syncLoyalty, syncReturns,
@@ -967,10 +967,12 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
   const [stockDraft, setStockDraft]     = useState<Record<string, string>>({})
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const persistProducts = (updated: Product[]) => {
+  // Contagem manual / zerar: fixa o stock — mas só nos produtos que mudaram (os
+  // outros levariam o stock antigo deste dispositivo e desfaziam vendas de outros).
+  const persistProducts = (updated: Product[], alterados: Product[]) => {
     setProducts(updated)
     localStorage.setItem('khrismir_products', JSON.stringify(updated))
-    syncProducts(updated)
+    syncProducts(alterados, { comStock: true })
   }
 
   const startStockEdit = () => {
@@ -985,15 +987,18 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
     })
     if (invalid) { toast.error(`Quantidade inválida em "${invalid.name}" — usa um número igual ou maior que 0`); return }
     let changed = 0
+    const alterados: Product[] = []
     const updated = products.map(p => {
       const v = Number(stockDraft[p.id])
       if (v === Number(p.stock_quantity ?? 0)) return p
       changed++
-      return { ...p, stock_quantity: v }
+      const novo = { ...p, stock_quantity: v }
+      alterados.push(novo)
+      return novo
     })
     setStockMode(false)
     if (!changed) { toast.info('Nenhuma quantidade foi alterada'); return }
-    persistProducts(updated)
+    persistProducts(updated, alterados)
     toast.success(`Stock actualizado em ${changed} produto(s)`)
   }
 
@@ -1001,7 +1006,8 @@ function ProductsTab({ products, setProducts, categories }: { products: Product[
     const comStock = products.filter(p => Number(p.stock_quantity) !== 0).length
     if (!comStock) { toast.info('Todos os produtos já estão com stock 0'); return }
     if (!confirm(`Zerar o stock de ${comStock} produto(s)? Preços, nomes e restantes dados ficam como estão.`)) return
-    persistProducts(products.map(p => ({ ...p, stock_quantity: 0 })))
+    const zerados = products.map(p => ({ ...p, stock_quantity: 0 }))
+    persistProducts(zerados, zerados.filter((_, i) => Number(products[i].stock_quantity) !== 0))
     setStockMode(false)
     toast.success(`Stock zerado em ${comStock} produto(s)`)
   }
@@ -1786,7 +1792,7 @@ function PurchasesTab({ products, setProducts, purchases, setPurchases }: any) {
     for (const np of newPurchases) qtyByProduct.set(np.product_id, (qtyByProduct.get(np.product_id) || 0) + np.quantity)
     const upProd = products.map((p: any) => qtyByProduct.has(p.id) ? { ...p, stock_quantity: p.stock_quantity + qtyByProduct.get(p.id)! } : p)
     setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
-    syncProducts(upProd)
+    qtyByProduct.forEach((q, pid) => { ajustarStock(pid, q) }) // + no servidor, sem tocar no stock dos outros produtos
 
     // um lançamento de custo por produto (mantém a contabilidade correcta por linha da fatura)
     for (const np of newPurchases) {
@@ -1823,7 +1829,7 @@ OK = retira do stock · Cancelar = mantém o stock como está`)
     if (tirarStock) {
       const upProd = products.map((x: any) => qtyByProduct.has(x.id) ? { ...x, stock_quantity: Math.max(0, Number(x.stock_quantity) - qtyByProduct.get(x.id)!) } : x)
       setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
-      syncProducts(upProd)
+      qtyByProduct.forEach((q, pid) => { ajustarStock(pid, -q) })
     }
     toast.success(`${list.length} compra(s) apagada(s)${tirarStock ? ' e stock ajustado' : ''}`)
   }
@@ -1877,7 +1883,7 @@ OK = retira do stock · Cancelar = mantém o stock como está`)
     const upP = [newP, ...purchases]; setPurchases(upP); localStorage.setItem('khrismir_purchases', JSON.stringify(upP))
     const upProd = products.map((p: any) => p.id === form.pid ? { ...p, stock_quantity: p.stock_quantity + qty } : p)
     setProducts(upProd); localStorage.setItem('khrismir_products', JSON.stringify(upProd))
-    syncProducts(upProd)   // ← actualiza stock no Supabase para todos os dispositivos
+    ajustarStock(form.pid, qty)   // ← + no servidor, para todos os dispositivos
 
     // Regista automaticamente no Fluxo de Caixa (ID determinístico evita duplicados no sync)
     // — ou, se for a crédito, só lança em Contas a Pagar (sem sair dinheiro da Caixa já)
@@ -3210,7 +3216,8 @@ function SystemTab({ products, setProducts, categories }: { products: Product[];
         // da categoria ficar gravada.
         const results: any[] = []
         if (incomingCategories.length) results.push(await syncCategories(mergedCategories))
-        if (incomingProducts.length) results.push(await syncProducts(mergedProducts))
+        // Só os produtos do ficheiro, com o stock do ficheiro (é isso que se está a importar).
+        if (incomingProducts.length) results.push(await syncProducts(incomingProducts, { comStock: true }))
         if (incomingSuppliers.length) results.push(await syncSuppliers(mergedSuppliers))
         toast.dismiss(tid)
         const failed = results.filter((r: any) => r && r.ok === false)
@@ -3245,7 +3252,7 @@ function SystemTab({ products, setProducts, categories }: { products: Product[];
     setProducts(updated)
     localStorage.setItem('khrismir_products', JSON.stringify(updated))
     const tid = toast.loading('A zerar stock…')
-    const result = await syncProducts(updated)
+    const result = await syncProducts(updated, { comStock: true })
     toast.dismiss(tid)
     if (result.ok) toast.success(`Stock zerado em ${updated.length} produto(s).`)
     else toast.warning(`Stock zerado localmente — sincronização cloud falhou: ${result.error}`)
@@ -3725,7 +3732,7 @@ function ReturnsTab({ orders, products, setProducts, setOrders }: {
     })
     setProducts(updatedProducts)
     localStorage.setItem('khrismir_products', JSON.stringify(updatedProducts))
-    syncProducts(updatedProducts)   // ← actualiza stock no Supabase (devolução repõe stock)
+    modal.items.forEach(i => { if (i.product_id) ajustarStock(i.product_id, i.quantity) })   // ← devolução repõe stock no servidor
     const cfMovements = JSON.parse(localStorage.getItem('cf_movements') || '[]')
     cfMovements.unshift({ id: Date.now().toString(), date: new Date().toISOString().slice(0, 10), type: 'expense', description: `Devolução ${modal.order_number}${modal.customer_name ? ' — ' + modal.customer_name : ''}`, amount: modal.total, category: 'Devoluções', account: '', reference: modal.order_number, created_at: new Date().toISOString() })
     localStorage.setItem('cf_movements', JSON.stringify(cfMovements))

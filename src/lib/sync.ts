@@ -350,13 +350,25 @@ export async function applyPendingOutbox(): Promise<void> {
     if (e.op === 'delete') {
       if (idx >= 0) arr.splice(idx, 1)
     } else if (idx >= 0) {
-      arr[idx] = { ...arr[idx], ...e.payload }
+      // Produtos: o stock fica o da nuvem (acabado de trazer pelo pullAll) — o da fila
+      // é o de quando a linha foi gravada e não conta as vendas feitas depois.
+      if (e.table_name === 'products') {
+        const { [COM_STOCK]: fixar, ...linha } = e.payload ?? {}
+        arr[idx] = { ...arr[idx], ...linha, stock_quantity: fixar ? linha.stock_quantity : arr[idx].stock_quantity }
+      } else {
+        arr[idx] = { ...arr[idx], ...e.payload }
+      }
     } else if (e.table_name === 'products' && arr.some(r => r.name === e.payload?.name)) {
       // A loja só tem um produto por nome (unique name+store_id). São resíduos de
       // importações que falharam por nome repetido — nunca chegaram a existir.
       continue
     } else {
-      arr.unshift(e.table_name === 'orders' ? { items: [], ...e.payload } : e.payload)
+      if (e.table_name === 'products') {
+        const { [COM_STOCK]: _m, ...linha } = e.payload ?? {}
+        arr.unshift({ stock_quantity: 0, ...linha })
+      } else {
+        arr.unshift(e.table_name === 'orders' ? { items: [], ...e.payload } : e.payload)
+      }
     }
   }
   arrays.forEach((arr, key) => lsSet(key, arr))
@@ -637,7 +649,15 @@ export async function pushAll(): Promise<{ ok: boolean; error?: string; details:
 
 // ── ESCRITAS INCREMENTAIS ─────────────────────────────────────
 
-export async function syncProducts(products: Product[]): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Envia produtos para a nuvem. Por omissão SEM o stock: o stock muda por ajustes
+ * no servidor (vendas: syncProductStock; compras/devoluções: ajustarStock), e esta
+ * função recebe muitas vezes a lista inteira com o stock que ESTE dispositivo tinha
+ * — enviá-lo desfazia as vendas feitas noutros dispositivos. Produto novo fica com
+ * stock 0 (o valor por omissão). comStock: true só quando se quer mesmo fixar o
+ * stock (contagem manual, zerar, importações) — e então passar só esses produtos.
+ */
+export async function syncProducts(products: Product[], opts: { comStock?: boolean } = {}): Promise<{ ok: boolean; error?: string }> {
   if (!isSupabaseReady() || !supabase) return { ok: false, error: 'Supabase não configurado' }
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncProducts] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
@@ -649,11 +669,25 @@ export async function syncProducts(products: Product[]): Promise<{ ok: boolean; 
     // category_id NULL (não '') — string vazia viola a FK para categories(id)
     category_id: p.category_id || null, image_url: p.image_url ?? '',
     expiry_date: p.expiry_date ?? null, barcode: p.barcode ?? null, discount: p.discount ?? 0, store_id: sid,
-  }))
-  enqueueUpsert('products', productRows) // fila local (Electron)
+  })).map(({ stock_quantity, ...resto }) => (opts.comStock ? { ...resto, stock_quantity } : resto))
+  // Na fila, o marcador diz ao drainOutbox que este stock é para fixar mesmo.
+  enqueueUpsert('products', productRows.map(r => (opts.comStock ? { ...r, [COM_STOCK]: true } : r)))
   const { error } = await supabase.from('products').upsert(productRows, { onConflict: 'id' })
   if (error) { console.error('[syncProducts]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
+}
+
+/** Marcador interno nas linhas de produtos da fila: "este stock é para fixar". */
+const COM_STOCK = '__com_stock'
+
+/**
+ * Ajusta o stock de um produto no servidor por diferença (+ entrada, − saída) —
+ * compras, compras apagadas, devoluções. Usa o mesmo RPC atómico das vendas
+ * (stock − quantidade), com a quantidade negada; sem ligação/sessão fica na fila.
+ */
+export function ajustarStock(productId: string, delta: number): Promise<number | null> {
+  if (!delta) return Promise.resolve(null)
+  return syncProductStock(productId, -delta)
 }
 
 /**
@@ -1132,6 +1166,25 @@ const UPSERT_MAP: Record<string, (row: any, sid: string) => any> = {
 
 let draining = false
 
+/**
+ * Produto vindo da fila. O stock de um produto que já existe na nuvem NUNCA é
+ * reescrito a partir da fila: as vendas baixam-no no servidor (RPC
+ * decrement_product_stock), e a linha guardada na fila tem o stock da altura em
+ * que foi gravada. Enviá-la por inteiro desfazia essas baixas — visto ao vivo em
+ * 2026-10-19: Cachucho 16,75 na nuvem voltaria a 35,15 (stock de antes da venda).
+ * Só um produto novo (que ainda não existe) é criado com o stock da fila.
+ */
+async function enviarProdutoDaFila(row: any): Promise<{ error: any }> {
+  const { stock_quantity: _stock, ...semStock } = row
+  // Linhas antigas da fila têm stock; as novas (syncProducts sem comStock) não —
+  // produto novo sem stock na linha fica com o valor por omissão da tabela (0).
+  const upd = await supabase!.from('products').update(semStock).eq('id', row.id).select('id')
+  if (upd.error) return { error: upd.error }
+  if (upd.data && upd.data.length > 0) return { error: null }
+  const ins = await supabase!.from('products').insert(row)
+  return { error: ins.error }
+}
+
 /** "Tabela" da fila para baixas de stock por fazer (RPC decrement_product_stock). */
 const STOCK_QUEUE = '__baixa_stock'
 
@@ -1222,7 +1275,11 @@ export async function drainOutbox(): Promise<void> {
 
       const { error } = entry.op === 'delete'
         ? await supabase.from(entry.table_name).delete().eq('id', entry.row_id)
-        : await supabase.from(entry.table_name).upsert(row, { onConflict: 'id' })
+        : entry.table_name === 'products'
+          ? (row[COM_STOCK]
+              ? await supabase.from('products').upsert((({ [COM_STOCK]: _m, ...r }) => r)(row), { onConflict: 'id' })
+              : await enviarProdutoDaFila(row))
+          : await supabase.from(entry.table_name).upsert(row, { onConflict: 'id' })
 
       if (error) {
         if (error.code === '23505') {

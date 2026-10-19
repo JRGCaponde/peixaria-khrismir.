@@ -147,7 +147,7 @@ export default function ImportPrimaveraTab({ categories }: { categories: Categor
         toast.info(`Nada para importar: os ${jaExistiam} produtos seleccionados já existem na loja.`)
         return
       }
-      const result = await syncProducts(prods)
+      const result = await syncProducts(prods, { comStock: true }) // produtos novos, com o stock importado
       if (!result.ok) {
         toast.error(`Erro ao importar produtos: ${result.error ?? 'erro desconhecido'}`)
         return
