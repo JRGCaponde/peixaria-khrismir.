@@ -173,6 +173,7 @@ ipcMain.handle('db:deleteLocal', (_event, table, id, storeId) => localDb.deleteL
 ipcMain.handle('db:adoptOrphans', (_event, storeId) => localDb.adoptOrphans(storeId))
 ipcMain.handle('db:getPendingOutbox', () => localDb.getPendingOutbox())
 ipcMain.handle('db:markSynced', (_event, ids) => localDb.markSynced(ids))
+ipcMain.handle('db:confirmSent', (_event, table, rowIds, storeId, ate) => localDb.confirmSent(table, rowIds, storeId, ate))
 
 // ── IPC: armazém principal (kv) — o SQLite é a fonte de verdade dos dados ───
 // As versões "Sync" existem porque o preload tem de carregar os dados ANTES de

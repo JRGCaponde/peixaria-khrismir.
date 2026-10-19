@@ -77,6 +77,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     adoptOrphans: (storeId) => ipcRenderer.invoke('db:adoptOrphans', storeId),
     getPendingOutbox: () => ipcRenderer.invoke('db:getPendingOutbox'),
     markSynced: (ids) => ipcRenderer.invoke('db:markSynced', ids),
+    confirmSent: (table, rowIds, storeId, ate) => ipcRenderer.invoke('db:confirmSent', table, rowIds, storeId, ate),
     /** Grava chaves no armazém principal (value null apaga). Ver lib/sqliteMirror.ts */
     kvSetMany: (entries) => ipcRenderer.invoke('kv:setMany', entries),
     /** Versão síncrona — só para o fecho da janela, onde não dá para esperar. */

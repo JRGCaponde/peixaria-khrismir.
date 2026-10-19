@@ -34,6 +34,8 @@ export interface OutboxApi {
   adoptOrphans(storeId: string): Promise<number>
   getPendingOutbox(): Promise<OutboxEntry[]>
   markSynced(ids: number[]): Promise<void>
+  /** Opcional: os PCs com a versão antiga do Electron ainda não o têm. */
+  confirmSent?(table: string, rowIds: string[], storeId: string, ate: string): Promise<number>
 }
 
 // ── Papel de quem está a usar a app (alimentado por main.tsx) ──
@@ -84,6 +86,13 @@ const webOutbox: OutboxApi = {
   async getPendingOutbox() {
     return webRead().sort((a, b) => a.id - b.id)
   },
+  async confirmSent(table, rowIds, storeId, ate) {
+    const alvo = new Set(rowIds.map(String))
+    const antes = webRead()
+    const depois = antes.filter(e => !(e.table_name === table && e.store_id === storeId && alvo.has(e.row_id) && (e.created_at ?? '') <= ate))
+    if (depois.length !== antes.length) webWrite(depois)
+    return antes.length - depois.length
+  },
   async markSynced(ids) {
     // No browser não se guarda histórico: o que foi confirmado sai da fila (poupa espaço).
     const done = new Set(ids)
@@ -103,12 +112,33 @@ function podeEnfileirar(): boolean {
   return isElectron() || PAPEIS_EQUIPA.has(papelActual ?? '')
 }
 
-/** Regista linhas para envio ao Supabase assim que houver internet e sessão. Não bloqueia. */
-export function enqueueUpsert(table: string, rows: any[]): void {
+/**
+ * Regista linhas para envio ao Supabase assim que houver internet e sessão.
+ * Não é preciso esperar; quem quiser chamar confirmarEnvio() depois de um envio
+ * directo bem-sucedido espera pela marca de tempo que esta função devolve.
+ */
+export function enqueueUpsert(table: string, rows: any[]): Promise<string | null> {
   const storeId = getCurrentStoreId()
-  if (!podeEnfileirar() || !rows.length || !storeId) return
-  outbox().upsertLocal(table, rows, storeId).catch((e: any) =>
-    console.error('[localDB] enqueueUpsert', table, e?.message)
+  if (!podeEnfileirar() || !rows.length || !storeId) return Promise.resolve(null)
+  return outbox().upsertLocal(table, rows, storeId)
+    .then(() => new Date().toISOString())
+    .catch((e: any) => { console.error('[localDB] enqueueUpsert', table, e?.message); return null })
+}
+
+/**
+ * O envio directo destas linhas ao Supabase foi confirmado: as entradas da fila
+ * delas, criadas até "marca", já não são precisas. Sem isto ficavam na fila e eram
+ * reaplicadas mais tarde por cima de mudanças mais recentes — visto ao vivo: um
+ * "zerar stock" já enviado voltava a pôr a 0 o stock de uma compra feita depois.
+ */
+export function confirmarEnvio(table: string, rows: any | any[], marca: string | null): void {
+  const storeId = getCurrentStoreId()
+  if (!marca || !storeId) return
+  const ids = (Array.isArray(rows) ? rows : [rows]).map(r => String(r?.id)).filter(id => id && id !== 'undefined')
+  const api = outbox()
+  if (!ids.length || typeof api.confirmSent !== 'function') return
+  api.confirmSent(table, ids, storeId, marca).catch((e: any) =>
+    console.error('[localDB] confirmarEnvio', table, e?.message)
   )
 }
 

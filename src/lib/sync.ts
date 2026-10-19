@@ -6,7 +6,7 @@
 
 import { supabase, isSupabaseReady } from './supabase'
 import { getCurrentStoreId, BUSINESS_KEYS } from './storeContext'
-import { isElectron, isEquipaActual, enqueueUpsert, enqueueDelete, outbox, type OutboxEntry } from './localDB'
+import { isElectron, isEquipaActual, enqueueUpsert, enqueueDelete, confirmarEnvio, outbox, type OutboxEntry } from './localDB'
 import { isCloudOnline, aoReligar, verificarAgora } from './connectivity'
 import type { Order, Product, Category, CashFlow, Purchase, DeliveryZone, PromoCode } from '../types/database'
 import type { StoreSettings } from './settings'
@@ -671,8 +671,9 @@ export async function syncProducts(products: Product[], opts: { comStock?: boole
     expiry_date: p.expiry_date ?? null, barcode: p.barcode ?? null, discount: p.discount ?? 0, store_id: sid,
   })).map(({ stock_quantity, ...resto }) => (opts.comStock ? { ...resto, stock_quantity } : resto))
   // Na fila, o marcador diz ao drainOutbox que este stock é para fixar mesmo.
-  enqueueUpsert('products', productRows.map(r => (opts.comStock ? { ...r, [COM_STOCK]: true } : r)))
+  const marca = await enqueueUpsert('products', productRows.map(r => (opts.comStock ? { ...r, [COM_STOCK]: true } : r)))
   const { error } = await supabase.from('products').upsert(productRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('products', productRows, marca)
   if (error) { console.error('[syncProducts]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -742,8 +743,9 @@ export async function syncCategories(categories: Category[]) {
     id: c.id, name: c.name, description: c.description ?? '', image_url: c.image_url ?? '',
     store_id: sid,
   }))
-  enqueueUpsert('categories', categoryRows) // fila local (Electron)
+  const marca = await enqueueUpsert('categories', categoryRows) // fila local (Electron)
   const { error } = await supabase.from('categories').upsert(categoryRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('categories', categoryRows, marca)
   if (error) console.error('[syncCategories]', error.message)
 }
 
@@ -803,13 +805,15 @@ export async function syncOrder(order: Order): Promise<boolean> {
 
   // Equipa: a encomenda E os itens entram na fila antes de tentar enviar — antes os
   // itens só eram enfileirados se a encomenda passasse, e perdiam-se sem sessão.
-  enqueueUpsert('orders', [orderRow]) // só enfileira para a equipa (ver localDB.ts)
-  if (itemRows.length) enqueueUpsert('order_items', itemRows)
+  const marca = await enqueueUpsert('orders', [orderRow]) // só enfileira para a equipa (ver localDB.ts)
+  const marcaItens = itemRows.length ? await enqueueUpsert('order_items', itemRows) : null
   const { error } = await supabase.from('orders').upsert(orderRow, { onConflict: 'id' })
   if (error) { console.warn('Sync order error:', error.message); return false }
+  confirmarEnvio('orders', orderRow, marca)
   if (itemRows.length) {
     const { error: ie } = await supabase.from('order_items').upsert(itemRows, { onConflict: 'id' })
     if (ie) { console.warn('Sync order items error:', ie.message); return false }
+    confirmarEnvio('order_items', itemRows, marcaItens)
   }
   return true
 }
@@ -818,10 +822,11 @@ export async function syncOrderStatus(id: string, status: string) {
   // Fila: a linha inteira (um upsert só com id+status falha no NOT NULL de order_number).
   const sid = getCurrentStoreId()
   const local = ls<any[]>('khrismir_orders', []).find(o => o.id === id)
-  if (local && sid) enqueueUpsert('orders', [buildOrderRow({ ...local, status }, sid)])
+  const marca = local && sid ? await enqueueUpsert('orders', [buildOrderRow({ ...local, status }, sid)]) : null
   if (!isSupabaseReady() || !supabase) return
-  const { error } = await supabase.from('orders').update({ status, updated_at: new Date().toISOString() }).eq('id', id)
+  const { data, error } = await supabase.from('orders').update({ status, updated_at: new Date().toISOString() }).eq('id', id).select('id')
   if (error) console.error('[syncOrderStatus]', error.message)
+  else if (data && data.length) confirmarEnvio('orders', { id }, marca) // 0 linhas = RLS não deixou: fica na fila
 }
 
 export async function syncCashFlow(entries: CashFlow[]) {
@@ -846,8 +851,9 @@ export async function syncPurchases(purchases: any[]) {
     payment_status: p.payment_status ?? 'pago', paid_at: p.paid_at ?? null,
     store_id: sid,
   }))
-  enqueueUpsert('purchases', purchaseRows) // fila local (Electron)
+  const marca = await enqueueUpsert('purchases', purchaseRows) // fila local (Electron)
   const { error } = await supabase.from('purchases').upsert(purchaseRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('purchases', purchaseRows, marca)
   if (error) console.error('[syncPurchases]', error.message)
 }
 
@@ -869,9 +875,10 @@ export async function syncSettings(settings: StoreSettings) {
   // no onConflict porque é a chave primária (garantidamente única); store_id
   // nunca teve uma constraint de unicidade própria na base de dados.
   const settingsRow = { id: rowId, ...settings, updated_at: new Date().toISOString(), store_id: sid }
-  enqueueUpsert('store_settings', [settingsRow]) // fila local (Electron)
+  const marca = await enqueueUpsert('store_settings', [settingsRow]) // fila local (Electron)
   const { error } = await supabase.from('store_settings').upsert(settingsRow, { onConflict: 'id' })
   if (error) console.error('[syncSettings]', error.message)
+  else confirmarEnvio('store_settings', settingsRow, marca)
 }
 
 // ── LOJAS ─────────────────────────────────────────────────
@@ -965,8 +972,9 @@ export async function syncMapReferences(points: any[]) {
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncMapReferences] Sem loja seleccionada — sincronização cancelada'); return }
   const pointRows = points.map(p => ({ id: p.id, name: p.name, lat: p.lat, lng: p.lng, store_id: sid }))
-  enqueueUpsert('map_references', pointRows) // fila local (Electron)
+  const marca = await enqueueUpsert('map_references', pointRows) // fila local (Electron)
   const { error } = await supabase.from('map_references').upsert(pointRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('map_references', pointRows, marca)
   if (error) console.error('[syncMapReferences]', error.message)
 }
 
@@ -1012,8 +1020,9 @@ export async function syncPromos(promos: PromoCode[]): Promise<{ ok: boolean; er
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncPromos] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
   const promoRows = promos.map(p => ({ ...p, store_id: sid }))
-  enqueueUpsert('promo_codes', promoRows) // fila local (Electron)
+  const marca = await enqueueUpsert('promo_codes', promoRows) // fila local (Electron)
   const { error } = await supabase.from('promo_codes').upsert(promoRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('promo_codes', promoRows, marca)
   if (error) { console.error('[syncPromos]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -1023,8 +1032,9 @@ export async function syncSuppliers(suppliers: any[]): Promise<{ ok: boolean; er
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncSuppliers] Sem loja seleccionada — sincronização cancelada'); return { ok: false, error: 'Sem loja seleccionada' } }
   const supplierRows = suppliers.map(s => ({ ...s, store_id: sid }))
-  enqueueUpsert('suppliers', supplierRows) // fila local (Electron)
+  const marca = await enqueueUpsert('suppliers', supplierRows) // fila local (Electron)
   const { error } = await supabase.from('suppliers').upsert(supplierRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('suppliers', supplierRows, marca)
   if (error) { console.error('[syncSuppliers]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -1048,15 +1058,16 @@ export async function syncShifts(shifts: any[]) {
     closed_by: s.closed_by ?? null, notes: s.notes ?? '',
     store_id: sid,
   }))
-  enqueueUpsert('shift_sessions', shiftRows) // fila local (Electron)
+  const marca = await enqueueUpsert('shift_sessions', shiftRows) // fila local (Electron)
   const { error } = await supabase.from('shift_sessions').upsert(shiftRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('shift_sessions', shiftRows, marca)
   if (error) console.error('[syncShifts]', error.message)
 }
 
 // ── FLUXO DE CAIXA — novo sistema (cf_*) ─────────────────────
 
 export async function syncCfAccounts(accounts: any[]) {
-  enqueueUpsert('cf_accounts', accounts) // fila local (Electron) — garante envio mesmo se o pedido abaixo falhar offline
+  const marca = await enqueueUpsert('cf_accounts', accounts) // fila local (Electron) — garante envio mesmo se o pedido abaixo falhar offline
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncCfAccounts] Sem loja seleccionada — sincronização cancelada'); return }
@@ -1069,10 +1080,11 @@ export async function syncCfAccounts(accounts: any[]) {
     { onConflict: 'id' }
   )
   if (error) console.error('[syncCfAccounts]', error.message)
+  else confirmarEnvio('cf_accounts', accounts, marca)
 }
 
 export async function syncCfCategories(categories: any[]) {
-  enqueueUpsert('cf_categories', categories) // fila local (Electron)
+  const marca = await enqueueUpsert('cf_categories', categories) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncCfCategories] Sem loja seleccionada — sincronização cancelada'); return }
@@ -1085,10 +1097,11 @@ export async function syncCfCategories(categories: any[]) {
     { onConflict: 'id' }
   )
   if (error) console.error('[syncCfCategories]', error.message)
+  else confirmarEnvio('cf_categories', categories, marca)
 }
 
 export async function syncCfMovements(movements: any[]) {
-  enqueueUpsert('cf_movements', movements) // fila local (Electron)
+  const marca = await enqueueUpsert('cf_movements', movements) // fila local (Electron)
   if (!isSupabaseReady() || !supabase) return
   const sid = getCurrentStoreId()
   if (!sid) { console.error('[syncCfMovements] Sem loja seleccionada — sincronização cancelada'); return }
@@ -1104,6 +1117,7 @@ export async function syncCfMovements(movements: any[]) {
     { onConflict: 'id' }
   )
   if (error) console.error('[syncCfMovements]', error.message)
+  else confirmarEnvio('cf_movements', movements, marca)
 }
 
 export async function deleteCfMovement(id: string) {
@@ -1383,8 +1397,9 @@ export async function syncAccountingAccounts(accounts: any[]) {
     nature: a.nature, editable: a.editable ?? true,
     store_id: sid,
   }))
-  enqueueUpsert('accounting_accounts', accountRows) // fila local (Electron)
+  const marca = await enqueueUpsert('accounting_accounts', accountRows) // fila local (Electron)
   const { error } = await supabase.from('accounting_accounts').upsert(accountRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('accounting_accounts', accountRows, marca)
   if (error) console.error('[syncAccountingAccounts]', error.message)
 }
 
@@ -1398,8 +1413,9 @@ export async function syncJournalEntries(entries: any[]) {
     lines: e.lines ?? [], created_at: e.created_at ?? new Date().toISOString(),
     store_id: sid,
   }))
-  enqueueUpsert('journal_entries', entryRows) // fila local (Electron)
+  const marca = await enqueueUpsert('journal_entries', entryRows) // fila local (Electron)
   const { error } = await supabase.from('journal_entries').upsert(entryRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('journal_entries', entryRows, marca)
   if (error) console.error('[syncJournalEntries]', error.message)
 }
 
@@ -1437,8 +1453,9 @@ export async function syncLoyalty(transactions: any[]): Promise<{ ok: boolean; e
     points: t.points ?? 0, type: t.type, order_id: t.order_id ?? '',
     created_at: t.created_at, store_id: sid,
   }))
-  enqueueUpsert('loyalty_transactions', transactionRows) // fila local (Electron)
+  const marca = await enqueueUpsert('loyalty_transactions', transactionRows) // fila local (Electron)
   const { error } = await supabase.from('loyalty_transactions').upsert(transactionRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('loyalty_transactions', transactionRows, marca)
   if (error) { console.error('[syncLoyalty]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }
@@ -1453,8 +1470,9 @@ export async function syncReturns(returns_: any[]): Promise<{ ok: boolean; error
     total: r.total ?? 0, reason: r.reason ?? '', created_at: r.created_at,
     store_id: sid,
   }))
-  enqueueUpsert('returns', returnRows) // fila local (Electron)
+  const marca = await enqueueUpsert('returns', returnRows) // fila local (Electron)
   const { error } = await supabase.from('returns').upsert(returnRows, { onConflict: 'id' })
+  if (!error) confirmarEnvio('returns', returnRows, marca)
   if (error) { console.error('[syncReturns]', error.message); return { ok: false, error: error.message } }
   return { ok: true }
 }

@@ -138,6 +138,28 @@ function getPendingOutbox() {
     .map(r => ({ ...r, payload: r.payload ? JSON.parse(r.payload) : null }))
 }
 
+/**
+ * Um envio directo ao Supabase destas linhas acabou de ser confirmado: as entradas
+ * pendentes delas criadas até "ate" ficam marcadas como enviadas. Sem isto, uma
+ * entrada antiga (ex: "zerar stock") ficava na fila e era reaplicada depois por
+ * cima de valores mais recentes (ex: uma compra feita a seguir).
+ */
+function confirmSent(table, rowIds, storeId, ate) {
+  if (!rowIds || !rowIds.length) return 0
+  const d = getDb()
+  const now = new Date().toISOString()
+  const stmt = d.prepare(
+    `UPDATE sync_outbox SET synced_at = ? WHERE synced_at IS NULL AND table_name = ? AND row_id = ? AND store_id IS ? AND created_at <= ?`
+  )
+  let n = 0
+  d.exec('BEGIN')
+  try {
+    for (const id of rowIds) n += stmt.run(now, table, String(id), storeId ?? null, ate).changes
+    d.exec('COMMIT')
+  } catch (e) { d.exec('ROLLBACK'); throw e }
+  return n
+}
+
 function markSynced(ids) {
   if (!ids.length) return
   const d = getDb()
@@ -146,4 +168,4 @@ function markSynced(ids) {
   for (const id of ids) stmt.run(now, id)
 }
 
-module.exports = { upsertLocal, deleteLocal, adoptOrphans, getPendingOutbox, markSynced, kvGetAll, kvSetMany }
+module.exports = { upsertLocal, deleteLocal, adoptOrphans, getPendingOutbox, markSynced, confirmSent, kvGetAll, kvSetMany }
