@@ -1313,6 +1313,14 @@ export async function drainOutbox(): Promise<void> {
           : await supabase.from(entry.table_name).upsert(row, { onConflict: entry.table_name === 'suppliers' ? 'name,store_id' : 'id' })
 
       if (error) {
+        if (error.code === '23505' && (entry.table_name === 'orders' || entry.table_name === 'order_items')) {
+          // Encomenda/factura com número repetido (ex: o POS e as Facturas FA usam contadores
+          // diferentes e ambos geram 2026/001). É uma venda real — NUNCA se descarta: fica
+          // na fila até alguém resolver o número. Visto ao vivo: factura FA 2026/001 da
+          // DUBENGO (260 000 Kz, fiado) bateu com a venda POS 2026/001 de 18/10.
+          console.error(`[drainOutbox] ${entry.table_name}/${entry.row_id} NÃO enviada — número repetido:`, error.message)
+          continue
+        }
         if (error.code === '23505') {
           // Duplicado (ex: nome de produto repetido): nunca vai passar, por mais que se
           // repita. Descarta em vez de ficar preso na fila para sempre.
